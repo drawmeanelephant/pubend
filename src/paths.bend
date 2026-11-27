@@ -1,0 +1,145 @@
+import Base
+
+# Path algebra — lexical join and dot-segment normalization of
+# docs/v0-spec.md §5.2.  Pure, total, no filesystem: everything here is
+# string surgery on paths relative to the content root, written with
+# forward slashes.  The correctness core of link resolution lives here, so
+# the corner cases matter: ".." past the root, redundant "." segments,
+# duplicate slashes, deep nesting, and segment names that merely look like
+# dot segments ("..x", "x..", "...").
+
+def ifs(-A: Type, z: Bool, yes: Unit -> A, no: Unit -> A) -> A:
+  match z:
+    case True{}:
+      yes(Unit{})
+    case False{}:
+      no(Unit{})
+
+# --- segment algebra ------------------------------------------------------
+
+# One path segment as the normalizer sees it.  "" (from duplicate or
+# leading/trailing slashes) and "." both skip; ".." pops one segment or
+# records a root escape; everything else is a name — including names that
+# only resemble dot segments ("..x", "x..", "...").
+type PathSeg is Data:
+  PsSkip{}
+  PsPop{}
+  PsName{name: String}
+
+def path_seg_name(+seg: String) -> PathSeg:
+  PsName{seg}
+
+def path_seg_of(+seg: String) -> PathSeg:
+  ifs(PathSeg, String.is_empty(seg),
+    u => PsSkip{},
+    u => ifs(PathSeg, String.eq(seg, "."),
+      v => PsSkip{},
+      v => ifs(PathSeg, String.eq(seg, ".."),
+        w => PsPop{},
+        w => path_seg_name(seg))))
+
+# The stack is the reversed output path: its head is the deepest-pushed
+# (last) segment.  ".." may only ever sit at the bottom of the stack — it
+# is pushed only onto an empty stack or onto another "..", so any ".." in
+# the final stack is a contiguous leading run of escapes in the result.
+def path_pop.go(+h: String, t: List<&2, String>, under: Bool) -> List<&2, String>:
+  match under:
+    case True{}:
+      ".." <> h <> t
+    case False{}:
+      t
+
+def path_apply(s: PathSeg, stack: List<&2, String>) -> List<&2, String>:
+  match s stack:
+    case PsSkip{} _:
+      stack
+    case PsName{+name} _:
+      name <> stack
+    case PsPop{} Nil{}:
+      ".." <> Nil{}
+    case PsPop{} +h <> t:
+      path_pop.go(h, t, String.eq(h, ".."))
+
+def path_norm_go(segs: List<&2, String>, stack: List<&2, String>) -> List<&2, String>:
+  match segs:
+    case Nil{}:
+      stack
+    case +h <> t:
+      path_norm_go(t, path_apply(path_seg_of(h), stack))
+
+# A ".." survives in the stack iff the path escapes the root (they can only
+# be the bottom contiguous prefix, but checking membership is simpler and
+# equivalent here).
+def path_escaped(stack: List<&2, String>) -> Bool:
+  match stack:
+    case Nil{}:
+      False{}
+    case +h <> t:
+      ifs(Bool, String.eq(h, ".."),
+        u => True{},
+        u => path_escaped(t))
+
+# The result of lexical normalization: the normalized relative path, or an
+# escape marker when ".." climbs past the content root.  Escaping is a
+# content error in the spec, so the distinction is a value, not a crash.
+type PathResult is Data:
+  PathOk{path: String}
+  PathEscape{}
+
+def path_ok(+path: String) -> PathResult:
+  PathOk{path}
+
+def path_result_fin(stack: List<&2, String>, escaped: Bool) -> PathResult:
+  match escaped:
+    case True{}:
+      PathEscape{}
+    case False{}:
+      path_ok(String.join(List.reverse(&2, String, stack), "/"))
+
+# Lexically normalize a slash-joined relative path: "." and empty segments
+# drop, ".." pops a name or records a root escape.
+def path_normalize(+s: String) -> PathResult:
+  +stack = path_norm_go(String.split(s, '/'), [])
+  path_result_fin(stack, path_escaped(stack))
+
+# --- joining ---------------------------------------------------------------
+
+# Join a target written in page `from`'s directory against that directory.
+# The raw concat is enough: a following normalize already treats the join
+# slash and an empty dir correctly ("guides" + "x.md" -> "guides/x.md";
+# "" + "x.md" -> "x.md").
+def path_join(+dir: String, +target: String) -> String:
+  dir ++ "/" ++ target
+
+# The directory portion of a page id: everything before the last '/'.
+# "guides/getting-started" -> "guides"; "index" -> "" (the content root).
+def path_dirname(+id: String) -> String:
+  +segs = String.split(id, '/')
+  +len = List.length(&2, String, segs)
+  String.join(List.take(&2, String, segs, Nat.sub(len, 1n)), "/")
+
+# --- convenience --------------------------------------------------------------
+
+# Everything after the first '#', stripped: the fragment-free base of a
+# link target.  With no '#' the target is unchanged (String.split always
+# yields at least the head).
+def path_frag_of(parts: List<&2, String>) -> String:
+  match parts:
+    case Nil{}:
+      ""
+    case +h <> t:
+      h
+
+def path_strip_fragment(+s: String) -> String:
+  path_frag_of(String.split(s, '#'))
+
+def path_has_query(+s: String) -> Bool:
+  String.contains(s, "?")
+
+def path_ends_md(+s: String) -> Bool:
+  String.ends_with(s, ".md")
+
+# Strip a trailing ".md" (callers gate on path_ends_md first).  ".md" is
+# three characters, and String.take counts characters.
+def path_strip_md(+s: String) -> String:
+  String.take(s, Nat.sub(String.length(s), 3n))
