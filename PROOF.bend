@@ -7,7 +7,7 @@ import ./src/links.bend as L
 import ./src/paths.bend as P
 import ./engine/src/parser/markdown.bend as Markdown
 import ./engine/src/render/html.bend as Html
-import ./engine/src/parallel/engine.bend as Eng
+import ./engine/src/document_links.bend as DocumentLinks
 import ./LAWS.bend as Laws
 
 # pubend proofs.
@@ -390,7 +390,7 @@ def lem_eid(p: C.PagePrep, +ids: List<&2, String>, +e: Model.EmittedPage,
   match p:
     case C.PagePrep{+id, parent, title, +body}:
       lem_efin_id(id, Html.render_document(Markdown.parse_markdown(body)),
-        L.resolve_page_links(id, Eng.document_link_targets(Markdown.parse_markdown(body)), ids), e, ev)
+        L.resolve_page_links(id, DocumentLinks.document_link_targets(Markdown.parse_markdown(body)), ids), e, ev)
 
 # --- the membership bridge ------------------------------------------------------
 #
@@ -676,8 +676,8 @@ def lem_elinks(p: C.PagePrep, +ids: List<&2, String>, +e: Model.EmittedPage,
   match p:
     case C.PagePrep{+id, parent, title, +body}:
       lem_efin_r(id, Html.render_document(Markdown.parse_markdown(body)),
-        Eng.document_link_targets(Markdown.parse_markdown(body)),
-        L.resolve_page_links(id, Eng.document_link_targets(Markdown.parse_markdown(body)), ids),
+        DocumentLinks.document_link_targets(Markdown.parse_markdown(body)),
+        L.resolve_page_links(id, DocumentLinks.document_link_targets(Markdown.parse_markdown(body)), ids),
         e, fpps, ids, fps, ip, eve, {==}, ev)
 
 # --- the emit_all fold ----------------------------------------------------------

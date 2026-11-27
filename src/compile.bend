@@ -6,7 +6,7 @@ import ./graph.bend as G
 import ./links.bend as L
 import ../engine/src/parser/markdown.bend as Markdown
 import ../engine/src/render/html.bend as Html
-import ../engine/src/parallel/engine.bend as Eng
+import ../engine/src/document_links.bend as DocumentLinks
 
 # The real compile pipeline (docs/v0-spec.md §6), pure over pre-loaded
 # pages.  IO — discovery, reading, writing — stays outside in the shell.
@@ -182,7 +182,7 @@ def emit_one(+ids: List<&2, String>, pp: PagePrep) -> Maybe<&2, Model.EmittedPag
     case PagePrep{+id, parent, title, +body}:
       +doc = Markdown.parse_markdown(body)
       emit_fin(id, Html.render_document(doc),
-        L.resolve_page_links(id, Eng.document_link_targets(doc), ids))
+        L.resolve_page_links(id, DocumentLinks.document_link_targets(doc), ids))
 
 def emit_cons(m: Maybe<&2, Model.EmittedPage>, rest: Maybe<&2, List<&2, Model.EmittedPage>>) ->
   Maybe<&2, List<&2, Model.EmittedPage>>:
