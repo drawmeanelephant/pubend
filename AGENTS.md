@@ -64,6 +64,9 @@ unless that command genuinely succeeds.
 - Do not install or use Docker, VM runtimes, containers, or container emulators for verification.
 - Do not commit secrets or tokens. Do not weaken branch protection, CI, security settings, or supply-chain
   pinning to make a check pass.
+- When a bendown boundary bug, missing pure API, or semantic mismatch is found, file an upstream bendown issue
+  with a minimal reproduction instead of hiding a workaround in pubend. Upstream fixes remain separate reviewed
+  changes and pin updates.
 - Keep commits small and coherent. Run the narrowest relevant verification first, then `sh tools/verify_ci.sh
   all` before opening or updating a PR when the change affects compile, proofs, corpus, or CI.
 
