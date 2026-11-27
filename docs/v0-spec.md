@@ -233,8 +233,9 @@ beyond the closed key set, parallel graph validation, incremental compilation.
 ## 9. Failure behavior summary
 
 Everything fail-loud with structured diagnostics: unknown/duplicate frontmatter keys, malformed frontmatter,
-duplicate ids, dangling parent, parent cycle, link escaping content root, link to nonexistent page, oversized
-input, invalid UTF-8, symlinked entries, non-`.md` files in content. Diagnostics always carry a stable class
+duplicate ids, dangling parent, parent cycle, link escaping content root, link to nonexistent page, malformed
+percent triplets in internal links, invalid UTF-8 percent bytes in internal links, oversized input, invalid UTF-8,
+symlinked entries, non-`.md` files in content. Diagnostics always carry a stable class
 and, when available, content path/page id. Frontmatter diagnostics carry original-file line and column. Graph
 diagnostics carry the involved page ids but have no source span in v0. Link diagnostics carry source page and
 the engine-normalized AST target (not necessarily the author-written spelling) and, when exposed by the
