@@ -197,14 +197,32 @@ discover (IO) → read+parse batch (parallel pure map over pages)
 - The `<title>` is the frontmatter `title` when present, otherwise the text of the first level-1 heading when
   present, otherwise the page id.
 - Parent/children navigation uses validated forest edges only. Draft pages render and may be linked to from
-  content, but draft pages are excluded from nav child listings.
+  content, but draft pages are excluded from all generated nav links: they appear neither in child listings nor
+  as parent links.
 - A thin per-build manifest `_pubend/manifest.json` inside the output tree. Its schema is deterministic JSON
   with exact key order and two-space indentation, ending in one newline: top-level `version`, then `pages`;
   each page entry contains `id`, `path`, then `sha256` in that order. `pages` is in emitted-page order, and
-  `sha256` is the lowercase hex SHA-256 digest of the exact emitted HTML file bytes. JSON strings are UTF-8;
-  only JSON-required escaping is applied. The manifest contains no timestamps or absolute paths. SHA-256 is
+  `sha256` is the lowercase hex SHA-256 digest of the exact emitted HTML file bytes. `path` is the
+  output-tree-relative HTML path (for example `deep/page.html`), not the source markdown path. JSON strings are
+  UTF-8; only JSON-required escaping is applied. The manifest contains no timestamps or absolute paths. SHA-256 is
   trusted host glue in v0, not proof-covered Bend code. This records contingent facts only. Invariants are
   theorems and appear nowhere in runtime evidence.
+
+### 7.1 CLI contract
+
+- Exit codes are exact: `0` success; `1` input-tree or content validation failure; `2` command-line/path usage
+  refusal; `3` host IO, environment, compiler-artifact, or output-publication failure.
+- Successful builds write nothing to stdout or stderr. Failures write one UTF-8 JSON object to stderr followed
+  by one newline: top-level keys `version`, `status`, then `diagnostics`, in that order. `version` is `1` and
+  `status` is `error`. Each diagnostic object uses the stable key order `class`, `path`, `page`, `line`,
+  `column`, `target`, `span`, `message`; unavailable scalar fields are `null` rather than omitted. `span`, when
+  present, is an object with `start` and `end` engine-normalized UTF-8 offsets. Diagnostic classes align with
+  the oracle taxonomy where the same condition exists.
+- The fixed publication sibling names are `OUT.pubend-lock`, `OUT.pubend-stage`, and `OUT.pubend-previous`.
+  An existing lock is a host failure and is never silently removed. After the lock is acquired, incomplete
+  stage trees may be removed; if output is absent and a backup exists, the backup is restored before a new
+  build proceeds. A symlinked pre-existing output path is a host failure. These fixed names are implementation
+  boundary details and never appear inside output content.
 
 ## 8. Explicit non-goals for v0
 
