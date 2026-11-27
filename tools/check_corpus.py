@@ -333,6 +333,7 @@ def load_pages(content_dir):
             if size > MAX_PAGE_BYTES:
                 diags.append(Diag("oversized-page", rel, 0, 0,
                                   f"{size} bytes exceeds 1 MiB ceiling"))
+                continue
             with open(full, "rb") as fh:
                 raw = fh.read()
             try:
@@ -395,6 +396,10 @@ def resolve(page_id, dest):
 # graph checks (v0-spec §4)
 
 
+def ascii_lower_ascii_only(s):
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s)
+
+
 def graph_checks(pages):
     diags = []
     by_id = {}
@@ -407,7 +412,7 @@ def graph_checks(pages):
                                   f"id {pid!r} claimed by {len(ps)} pages"))
     lower = {}
     for p in pages:
-        lower.setdefault(p.id.lower(), set()).add(p.id)
+        lower.setdefault(ascii_lower_ascii_only(p.id), set()).add(p.id)
     for lid, ids in lower.items():
         if len(ids) > 1:
             for p in pages:
