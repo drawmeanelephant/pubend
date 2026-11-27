@@ -24,6 +24,10 @@ DIR/
   proof-integrated boundary pattern inherited from bendown.
 - Page bytes must be valid UTF-8. Invalid UTF-8 is a content error; lossy replacement characters must not be
   introduced by the input boundary.
+- Discovery order is deterministic: within each directory, host entry names are ordered by Unicode code point;
+  regular files are processed before child directories, then child directories are traversed in that same order.
+  This depth-first discovery order is the input page order and, after successful validation, the emitted-page
+  order. Compilation preserves that order rather than reordering pages.
 
 ## 2. Page identity — path-derived, no aliasing
 
@@ -127,8 +131,10 @@ An internal page link written in page `F` with raw target `T` resolves as pure p
 
 Each emitted page carries, as part of the compile artifact model, the list of resolved internal target ids.
 Rendered output rewrites internal `.md` targets to relative `.html` paths from the emitting page to the
-resolved target page, preserving any `#fragment` suffix byte-for-byte after the fragment marker. The relative
-path is lexical and contains no leading `./`:
+resolved target page, preserving any `#fragment` suffix byte-for-byte as represented in the engine-normalized AST target.
+The relative path is lexical, contains no leading `./`, and is emitted as UTF-8 text without an additional
+publication-level percent-encoding pass; HTML-attribute escaping still applies. Ids containing spaces or
+non-ASCII characters therefore produce literal UTF-8 href text in v0:
 
 - `deep/page` linking `index.md` emits `../index.html`;
 - `index` linking `deep/page.md#x` emits `deep/page.html#x`;
@@ -163,26 +169,36 @@ discover (IO) → read+parse batch (parallel pure map over pages)
   proof obligation, not a test hope. `--seq` exists to measure and to cross-check.
 - Determinism: same input bytes → same output bytes. No timestamps, no absolute paths, no environment leakage in
   output. Proven, not tested.
-- On any content error: nonzero exit, spanned or best-available structured diagnostics on stderr, and no partial
-  output tree. Output is written to a temporary sibling tree first and renamed into place only after the complete
-  output tree has been written successfully. Build failure before the final swap leaves the prior output tree
-  untouched; temporary-tree cleanup is best-effort host IO and must not hide the original diagnostic.
+- On any content error: nonzero exit, structured diagnostics on stderr, and no partial output tree. Output is
+  written completely to a fixed temporary sibling tree first. The host then uses a same-parent backup swap:
+  move any existing output to a fixed sibling backup name, move the staged tree into place, and remove the
+  backup. Build failure before the swap leaves the prior output tree untouched. A crash inside the swap may
+  leave the backup for recovery; this is atomic-ish whole-tree publication, not a claim of strict atomic
+  replacement of a non-empty directory. Temporary-tree cleanup is best-effort host IO and must not hide the
+  original diagnostic.
 
 ## 7. Output
 
 - `pubend build DIR` writes `DIR/dist/` by default. The build workspace is the resolved `DIR` site root. A
   relative `--out` is resolved against `DIR`; an absolute `--out` is accepted only when it remains inside `DIR`.
   The output directory must not be `DIR` itself, `DIR/content`, or any descendant of `DIR/content`.
-- One layout shell for all pages: `<title>`, rendered fragment, simple parent/children nav derived from the
-  validated forest. No theme system, no slots, no per-page layout selection in v0.
+- One layout shell for all pages. In order, the shell is `<!doctype html>`, an `<html lang="en">` element, a
+  head containing exactly `<meta charset="utf-8">` and `<title>`, and a body containing one
+  `<nav class="pubend-nav">` followed by `<main>` around the rendered fragment. The nav contains a parent link
+  when the page has a parent, then a `<ul class="pubend-children">` child list. Child entries are li elements
+  in emitted-page order restricted to that page's published children. Text and attribute values derived from
+  titles, ids, and hrefs are HTML-escaped; raw HTML inside the markdown fragment remains engine-owned behavior.
+  No theme system, no slots, no per-page layout selection in v0.
 - The `<title>` is the frontmatter `title` when present, otherwise the text of the first level-1 heading when
   present, otherwise the page id.
 - Parent/children navigation uses validated forest edges only. Draft pages render and may be linked to from
   content, but draft pages are excluded from nav child listings.
 - A thin per-build manifest `_pubend/manifest.json` inside the output tree. Its schema is deterministic JSON
-  with `version: 1` and a `pages` array in emitted-page order; each page entry contains `id`, `path`, and
-  `sha256`, where `sha256` is the lowercase hex SHA-256 digest of the exact emitted HTML file bytes. The
-  manifest contains no timestamps or absolute paths. This records contingent facts only. Invariants are
+  with exact key order and two-space indentation, ending in one newline: top-level `version`, then `pages`;
+  each page entry contains `id`, `path`, then `sha256` in that order. `pages` is in emitted-page order, and
+  `sha256` is the lowercase hex SHA-256 digest of the exact emitted HTML file bytes. JSON strings are UTF-8;
+  only JSON-required escaping is applied. The manifest contains no timestamps or absolute paths. SHA-256 is
+  trusted host glue in v0, not proof-covered Bend code. This records contingent facts only. Invariants are
   theorems and appear nowhere in runtime evidence.
 
 ## 8. Explicit non-goals for v0
@@ -193,7 +209,12 @@ beyond the closed key set, parallel graph validation, incremental compilation.
 
 ## 9. Failure behavior summary
 
-Everything fail-loud with spanned or best-available structured diagnostics: unknown/duplicate frontmatter keys,
-malformed frontmatter, duplicate ids, dangling parent, parent cycle, link escaping content root, link to
-nonexistent page, oversized input, invalid UTF-8, symlinked entries, non-`.md` files in content. Nothing fails
-silently; nothing is best-effort.
+Everything fail-loud with structured diagnostics: unknown/duplicate frontmatter keys, malformed frontmatter,
+duplicate ids, dangling parent, parent cycle, link escaping content root, link to nonexistent page, oversized
+input, invalid UTF-8, symlinked entries, non-`.md` files in content. Diagnostics always carry a stable class
+and, when available, content path/page id. Frontmatter diagnostics carry original-file line and column. Graph
+diagnostics carry the involved page ids but have no source span in v0. Link diagnostics carry source page and
+raw target and, when exposed by the engine, the engine-normalized markdown span offsets; those offsets are
+best-available provenance, not guaranteed original-file line/column after reference stripping or newline
+normalization. Input-tree diagnostics have paths but no line/column. Nothing fails silently; nothing is
+best-effort.
