@@ -28,6 +28,8 @@ Diagnostic classes (stable strings, compared by fixtures):
     link-root-escape           internal .md link normalizes above content root
     link-nonexistent-page      internal .md link resolves to no page id
     link-query                 internal .md link carrying a ?query suffix
+    link-malformed-percent     internal .md link path has a malformed % triplet
+    link-invalid-percent-utf8  internal .md link percent bytes are not valid UTF-8
     non-md-file                regular file under content/ not ending in .md
     invalid-utf8               page bytes are not valid UTF-8
     symlinked-entry            symlinked entry under content/ (file, directory,
@@ -372,10 +374,53 @@ def classify(dest):
     return "internal" if base.endswith(".md") else "passthrough"
 
 
+def percent_decode_path(text):
+    """Decode one internal-link path exactly once. Returns (decoded, error_class).
+    Contiguous percent triplets are UTF-8 byte input; malformed triplets and
+    invalid UTF-8 are distinct content errors. Ordinary Unicode/scalar text
+    passes through and decoded output is never reinterpreted."""
+    out = []
+    pending = bytearray()
+
+    def flush():
+        if not pending:
+            return True
+        try:
+            out.append(pending.decode("utf-8", errors="strict"))
+        except UnicodeDecodeError:
+            return False
+        pending.clear()
+        return True
+
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c != "%":
+            if not flush():
+                return None, "link-invalid-percent-utf8"
+            out.append(c)
+            i += 1
+            continue
+        if i + 2 >= len(text):
+            return None, "link-malformed-percent"
+        hx = text[i + 1:i + 3]
+        try:
+            pending.append(int(hx, 16))
+        except ValueError:
+            return None, "link-malformed-percent"
+        i += 3
+    if not flush():
+        return None, "link-invalid-percent-utf8"
+    return "".join(out), None
+
+
 def resolve(page_id, dest):
-    """dest: internal .md target, fragment-stripped, no query. Returns
-    normalized target id, or None if the path escapes the content root."""
+    """dest: internal .md target. Returns (target_id, error_class), where
+    error_class is None, a percent-decoding class, or 'escape'."""
     base = dest.split("#", 1)[0]
+    base, error = percent_decode_path(base)
+    if error is not None:
+        return None, error
     d = page_id.rsplit("/", 1)[0] if "/" in page_id else ""
     joined = f"{d}/{base}" if d else base
     stack = []
@@ -384,12 +429,12 @@ def resolve(page_id, dest):
             continue
         if seg == "..":
             if not stack:
-                return None
+                return None, "escape"
             stack.pop()
         else:
             stack.append(seg)
     target = "/".join(stack)
-    return target[:-3] if target.endswith(".md") else target
+    return (target[:-3] if target.endswith(".md") else target), None
 
 
 # ---------------------------------------------------------------------------
@@ -467,8 +512,14 @@ def link_checks(pages, by_id):
                                   f"internal link {dest!r} carries a ?query"))
                 continue
             n_internal += 1
-            target = resolve(p.id, dest)
-            if target is None:
+            target, error = resolve(p.id, dest)
+            if error == "link-malformed-percent":
+                diags.append(Diag("link-malformed-percent", p.path, ln, col,
+                                  f"internal link {dest!r} has a malformed percent triplet"))
+            elif error == "link-invalid-percent-utf8":
+                diags.append(Diag("link-invalid-percent-utf8", p.path, ln, col,
+                                  f"internal link {dest!r} percent bytes are not valid UTF-8"))
+            elif error == "escape":
                 diags.append(Diag("link-root-escape", p.path, ln, col,
                                   f"link {dest!r} escapes the content root"))
             elif target not in by_id:
