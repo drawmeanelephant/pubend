@@ -1,0 +1,2 @@
+# everything under _evaluation/ is scratch: cloned upstream repos, benchmark corpora, throwaway output
+_evaluation/
