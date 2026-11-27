@@ -42,9 +42,14 @@ corpus() {
   node tools/compile_corpus.mjs all corpus corpus-negative --rebuild
 }
 
+end_to_end() {
+  python3 tools/verify_end_to_end.py
+}
+
 case "$MODE" in
   proofs) proofs ;;
   corpus) corpus ;;
-  all) proofs; corpus ;;
-  *) echo "usage: sh tools/verify_ci.sh [proofs|corpus|all]" >&2; exit 2 ;;
+  end-to-end) end_to_end ;;
+  all) proofs; corpus; end_to_end ;;
+  *) echo "usage: sh tools/verify_ci.sh [proofs|corpus|end-to-end|all]" >&2; exit 2 ;;
 esac

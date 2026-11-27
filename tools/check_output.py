@@ -2,7 +2,7 @@
 """check_output.py — dependency-free auditor for pubend output trees.
 
 Usage:
-    python3 tools/check_output.py TREE [--expect-order-file FILE | --no-order-check] [--compare OTHER_TREE]
+    python3 tools/check_output.py TREE [--expect-order-json FILE | --expect-order-file FILE | --no-order-check] [--compare OTHER_TREE]
 
 Exit codes:
     0  the audit and requested comparison passed
@@ -50,16 +50,21 @@ Audit scope:
     canonical two-space JSON formatting with exactly one trailing newline, no
     additional keys such as timestamps, and no absolute paths;
   * emitted-page order cannot be inferred from an output tree alone.  A
-    conformance audit therefore requires `--expect-order-file`; without that
-    file it reports `artifact-manifest-order-unchecked` unless the caller
-    explicitly waives order evidence with `--no-order-check`.  The waiver is
-    not conformance evidence;
-  * when `--expect-order-file` is supplied, compares newline-delimited ids in
-    that file exactly with the manifest page id sequence;
-  * when `--compare` is supplied, recursively compares the regular-file sets
-    and exact file bytes of both trees.  All differing files are reported in
-    deterministic path order; byte differences report the first differing byte
-    offset.
+    conformance audit therefore requires `--expect-order-json` or legacy
+    `--expect-order-file`; without one it reports
+    `artifact-manifest-order-unchecked` unless the caller explicitly waives
+    order evidence with `--no-order-check`.  The waiver is not conformance
+    evidence;
+  * when `--expect-order-json` is supplied, reads strict JSON whose top-level
+    value is an array and whose elements are all strings, then compares that
+    sequence exactly with the manifest page id sequence;
+  * when legacy `--expect-order-file` is supplied, compares newline-delimited
+    ids in that file exactly with the manifest page id sequence;
+  * when `--compare` is supplied, recursively compares the complete
+    entry-path/entry-kind shape of both trees, including empty directories,
+    plus exact bytes for every shared regular file.  All differing entries are
+    reported in deterministic path order; byte differences report the first
+    differing byte offset.
 
 Stable diagnostic classes are `artifact-symlink`, `artifact-nonregular-file`,
 `artifact-foreign-file`, `artifact-invalid-utf8`, `artifact-shell-prefix`,
@@ -75,6 +80,7 @@ Stable diagnostic classes are `artifact-symlink`, `artifact-nonregular-file`,
 `artifact-manifest-missing-entry`, `artifact-manifest-extra-entry`,
 `artifact-manifest-order-mismatch`, `artifact-manifest-order-unchecked`,
 `artifact-compare-missing-file`, `artifact-compare-extra-file`,
+`artifact-compare-missing-entry`, `artifact-compare-extra-entry`,
 `artifact-compare-type-mismatch`, and `artifact-compare-bytes-differ`.
 
 Reusable public functions include `scan_tree`, `parse_html`,
@@ -101,13 +107,16 @@ Documented limits:
     passthrough targets are deliberately unchecked.
   * Attribute line/column positions are the start position of the containing
     tag; `html.parser` does not expose per-attribute positions.
-  * The comparison is a regular-file-set and byte comparison.  Empty-directory
-    presence is not significant, although a type conflict at the same path is
-    reported.  Symlinks are never followed.
+  * Artifact conformance itself does not treat empty directories as
+    significant.  `--compare` is deliberately stricter exact-tree evidence: it
+    compares entry paths and kinds, so empty-directory presence is significant
+    there.  Symlink targets, permission bits, ownership, timestamps, and other
+    metadata are not compared; symlinks are never followed.
   * A symlinked TREE or OTHER_TREE root is a host/usage refusal (exit 2);
     symlinks inside a tree are artifact violations (exit 1).
-  * Newline-delimited expected-id files cannot represent ids containing a
-    literal U+000A newline.  Other bytes are not stripped or normalized.
+  * Legacy newline-delimited expected-id files cannot represent ids containing
+    a literal U+000A newline.  Other bytes are not stripped or normalized.  Use
+    `--expect-order-json` for unambiguous order evidence.
   * Manifest JSON nesting beyond the Python parser/auditor recursion limit is
     reported as a schema violation; the valid manifest schema is shallow.
   * The filesystem is not immutable during the audit.  Read/stat races and
@@ -458,7 +467,13 @@ class ArtifactHTMLParser(html.parser.HTMLParser):
 
 
 def parse_html(text: str) -> tuple[tuple[HtmlTarget, ...], NavHooks]:
-    """Parse HTML text once and return `(href_src_targets, nav_hooks)`."""
+    """Parse HTML text once and return `(href_src_targets, nav_hooks)`.
+
+    The returned nav hooks are fragment-local: they describe pubend-nav markup
+    in the exact text supplied here.  Whole-document evidence callers should
+    use `extract_nav_hooks`, which first selects the fixed generated shell nav
+    region and therefore ignores nav-like markup inside `<main>`.
+    """
     parser = ArtifactHTMLParser()
     parser.feed(text)
     parser.close()
@@ -472,9 +487,16 @@ def extract_html_targets(text: str) -> tuple[HtmlTarget, ...]:
 
 
 def extract_nav_hooks(text: str) -> NavHooks:
-    """Extract pubend nav parent/child href-text hooks from HTML text."""
-    _, hooks = parse_html(text)
-    return hooks
+    """Extract parent/child hooks only from the fixed generated shell nav.
+
+    Nav-like markup in `<main>` is engine-owned content, not generated-nav
+    evidence.  If the fixed shell nav region cannot be identified, there are
+    no extractable generated-nav hooks.
+    """
+    _shell_diagnostics, structure = audit_shell_structure("<extract-nav-hooks>", text)
+    if structure is None:
+        return NavHooks(parent=(), children=())
+    return parse_html(structure.nav_text)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -1408,6 +1430,62 @@ def read_expect_order_file(path: str) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def read_expect_order_json_file(path: str) -> tuple[str, ...]:
+    """Read expected ids from a strict JSON array-of-strings file.
+
+    JSON whitespace is insignificant, but the top-level type and every element
+    type are exact.  Unpaired surrogate escapes are usage errors because they
+    cannot denote a filesystem page id string unambiguously.
+    """
+    order_path = os.path.normpath(os.fsdecode(os.fspath(path)))
+    try:
+        if os.path.islink(order_path):
+            raise HostError(order_path, "expect-order JSON file is a symlink")
+        info = os.stat(order_path, follow_symlinks=False)
+    except OSError as error:
+        raise host_error(order_path, "inspect expect-order JSON file", error) from error
+    if not stat.S_ISREG(info.st_mode):
+        raise HostError(order_path, "expect-order JSON file is not a regular file")
+    data = read_bytes(order_path)
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise HostError(
+            order_path,
+            f"expect-order JSON file is not strict UTF-8 at byte offset {error.start}",
+        ) from error
+    try:
+        parsed = json.loads(text, parse_constant=_reject_json_constant)
+    except json.JSONDecodeError as error:
+        raise HostError(
+            order_path,
+            "expect-order JSON is not valid JSON at "
+            f"line {error.lineno}, column {error.colno}: {error.msg}",
+        ) from error
+    except ValueError as error:
+        raise HostError(order_path, f"expect-order JSON is not valid JSON: {error}") from error
+    except RecursionError as error:
+        raise HostError(
+            order_path,
+            "expect-order JSON nesting exceeds the parser recursion limit",
+        ) from error
+
+    if type(parsed) is not list:
+        raise HostError(order_path, "expect-order JSON top level is not an array")
+    for index, value in enumerate(parsed):
+        if type(value) is not str:
+            raise HostError(
+                order_path,
+                f"expect-order JSON element {index} is not a string",
+            )
+        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise HostError(
+                order_path,
+                f"expect-order JSON element {index} contains an unpaired surrogate",
+            )
+    return tuple(parsed)
+
+
 def tree_shape_diagnostics(scan: TreeScan, tree_label: str) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
     for entry in scan.entries:
@@ -1435,23 +1513,28 @@ class AuditResult:
 
 
 def audit_tree(root: str, expect_order_file: str | None = None,
-               require_order_check: bool = True) -> AuditResult:
+               require_order_check: bool = True, *,
+               expect_order_json: str | None = None) -> AuditResult:
     """Audit one output tree and return its scan plus sorted diagnostics."""
-    expected_ids = (
-        read_expect_order_file(expect_order_file)
-        if expect_order_file is not None
-        else None
-    )
+    if expect_order_file is not None and expect_order_json is not None:
+        raise ValueError("expect_order_file and expect_order_json are mutually exclusive")
+    if expect_order_json is not None:
+        expected_ids = read_expect_order_json_file(expect_order_json)
+    elif expect_order_file is not None:
+        expected_ids = read_expect_order_file(expect_order_file)
+    else:
+        expected_ids = None
     scan = scan_tree(root)
     diagnostics = tree_shape_diagnostics(scan, "the audited tree")
 
-    if require_order_check and expect_order_file is None:
+    if require_order_check and expected_ids is None:
         diagnostics.append(diag(
             "artifact-manifest-order-unchecked",
             path=MANIFEST_PATH,
             message=(
                 "manifest page order cannot be inferred from output bytes; "
-                "pass --expect-order-file or explicitly waive with --no-order-check"
+                "pass --expect-order-json or legacy --expect-order-file, "
+                "or explicitly waive with --no-order-check"
             ),
         ))
 
@@ -1546,7 +1629,14 @@ def first_byte_difference(left_path: str, right_path: str) -> int | None:
 
 
 def compare_scanned_trees(left: TreeScan, right: TreeScan) -> tuple[TreeDifference, ...]:
-    """Compare regular-file sets and exact bytes in deterministic path order."""
+    """Compare full entry shape and regular-file bytes in path order.
+
+    Entry shape is the exact mapping of tree-relative paths to scanned entry
+    kinds.  Because directories are entries, empty-directory presence is
+    significant to this comparison even though it is not significant to
+    artifact conformance.  Symlinks are compared only as symlink-kind entries
+    and are never followed.
+    """
     left_files = left.files_by_path()
     right_files = right.files_by_path()
     left_kinds = left.kinds_by_path()
@@ -1564,12 +1654,18 @@ def compare_scanned_trees(left: TreeScan, right: TreeScan) -> tuple[TreeDifferen
                 right_kind=right_kind,
             ))
 
-    for path in sorted(set(left_files) - set(right_files)):
-        if path not in right_kinds:
-            differences.append(TreeDifference(kind="only-in-left", path=path, left_kind="file"))
-    for path in sorted(set(right_files) - set(left_files)):
-        if path not in left_kinds:
-            differences.append(TreeDifference(kind="only-in-right", path=path, right_kind="file"))
+    for path in sorted(set(left_kinds) - set(right_kinds)):
+        differences.append(TreeDifference(
+            kind="only-in-left",
+            path=path,
+            left_kind=left_kinds[path],
+        ))
+    for path in sorted(set(right_kinds) - set(left_kinds)):
+        differences.append(TreeDifference(
+            kind="only-in-right",
+            path=path,
+            right_kind=right_kinds[path],
+        ))
 
     for path in sorted(set(left_files) & set(right_files)):
         first_byte = first_byte_difference(left_files[path].full_path, right_files[path].full_path)
@@ -1592,16 +1688,34 @@ def compare_trees(left_root: str, right_root: str) -> tuple[TreeDifference, ...]
 
 def comparison_diagnostic(difference: TreeDifference) -> Diagnostic:
     if difference.kind == "only-in-left":
+        if difference.left_kind == "file":
+            return diag(
+                "artifact-compare-missing-file",
+                path=difference.path,
+                message="regular file is present in the left tree but missing from the right tree",
+            )
         return diag(
-            "artifact-compare-missing-file",
+            "artifact-compare-missing-entry",
             path=difference.path,
-            message="regular file is present in the left tree but missing from the right tree",
+            message=(
+                f"{difference.left_kind} entry is present in the left tree "
+                "but missing from the right tree"
+            ),
         )
     if difference.kind == "only-in-right":
+        if difference.right_kind == "file":
+            return diag(
+                "artifact-compare-extra-file",
+                path=difference.path,
+                message="regular file is present in the right tree but missing from the left tree",
+            )
         return diag(
-            "artifact-compare-extra-file",
+            "artifact-compare-extra-entry",
             path=difference.path,
-            message="regular file is present in the right tree but missing from the left tree",
+            message=(
+                f"{difference.right_kind} entry is present in the right tree "
+                "but missing from the left tree"
+            ),
         )
     if difference.kind == "type-mismatch":
         return diag(
@@ -1630,9 +1744,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("tree", metavar="TREE", help="output tree to audit")
     order_group = parser.add_mutually_exclusive_group()
     order_group.add_argument(
+        "--expect-order-json",
+        metavar="FILE",
+        help="strict JSON array-of-strings file whose ids must exactly match manifest page order",
+    )
+    order_group.add_argument(
         "--expect-order-file",
         metavar="FILE",
-        help="newline-delimited file whose ids must exactly match manifest page order",
+        help=(
+            "legacy newline-delimited file whose ids must exactly match manifest page order "
+            "(cannot represent an id containing U+000A)"
+        ),
     )
     order_group.add_argument(
         "--no-order-check",
@@ -1642,7 +1764,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compare",
         metavar="OTHER_TREE",
-        help="recursively compare file sets and exact bytes with another output tree",
+        help=(
+            "recursively compare exact entry path/kind shape, including empty directories, "
+            "and regular-file bytes with another output tree"
+        ),
     )
     return parser
 
@@ -1654,6 +1779,7 @@ def main(argv: list[str] | None = None) -> int:
             args.tree,
             expect_order_file=args.expect_order_file,
             require_order_check=not args.no_order_check,
+            expect_order_json=args.expect_order_json,
         )
         diagnostics = list(primary.diagnostics)
 
