@@ -1,0 +1,7 @@
+{
+  "_note": "Exact duplicate ids are physically impossible in a real filesystem tree: the id is the content/-relative path and paths are unique. These synthetic page records are consumed ONLY by 'check_corpus.py --self-test', which injects them into the page set before validation. Normal site validation never reads this file; the physical tree below validates as 'valid'.",
+  "pages": [
+    {"id": "dup"},
+    {"id": "dup"}
+  ]
+}

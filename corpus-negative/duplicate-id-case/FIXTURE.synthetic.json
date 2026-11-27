@@ -1,0 +1,7 @@
+{
+  "_note": "Two files whose ids differ only by case cannot coexist on this host's case-insensitive filesystem (verified: 'touch Foo.md foo.md' yields one file). On a case-sensitive fs this fixture could be physical: content/CaseClash.md + content/caseclash.md. These synthetic records are consumed ONLY by 'check_corpus.py --self-test'; the physical tree below validates as 'valid'.",
+  "pages": [
+    {"id": "CaseClash"},
+    {"id": "caseclash"}
+  ]
+}
