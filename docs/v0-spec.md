@@ -15,8 +15,8 @@ DIR/
 ```
 
 - A page is any regular file under `content/` ending in `.md`. Nested directories are allowed.
-- No other file types are read in v0. Non-`.md` files under `content/` are an error class **(open: ignore vs.
-  reject — propose reject, fail-loud)**.
+- No other file types are read in v0. Non-`.md` files under `content/` are an error: reject the input tree,
+  fail-loud.
 - Nothing outside `content/` is read. There is no configuration file in v0.
 - Maximum input size per page: 1 MiB. Over-limit is a content error, not a crash. The ceiling is part of the
   proof-integrated boundary pattern inherited from bendown.
@@ -74,10 +74,6 @@ shape emerges, this paragraph changes — but the validator will always produce 
 checkable certificate rather than a bare verdict.) The depth certificate already exists as
 working verified code in `src/graph.bend` (`certificate_check`).
 
-Validation is **sequential by design**. It is the join phase of a fork/join pipeline:
-per-page batch work is the parallel stage; validation is a small sequential reduction over
-its results. Parallelizing this phase is out of scope for v0 and is not a debt item.
-
 Order of checks, all errors aggregated before failing:
 
 1. duplicate ids (including case-insensitive collisions);
@@ -106,8 +102,8 @@ An internal page link written in page `F` with raw target `T` resolves as pure p
 
 1. strip any `#fragment` suffix — **fragments are passed through unvalidated in v0** (heading existence is not
    part of the theorem; see §8);
-2. strip any query suffix `?...` — treated as an error in v0 **(open: or strip; propose error, since queries on
-   static pages are meaningless)**;
+2. if the target contains a query suffix `?...`, reject it as a content error; queries on static pages are
+   meaningless in v0;
 3. join `T` against the directory of `F`'s id;
 4. normalize dot segments (`.`, `..`) lexically, never touching the filesystem;
 5. escaping above the content root (`..` past the root) is a content error;
@@ -164,5 +160,4 @@ beyond the closed key set, parallel graph validation, incremental compilation.
 
 Everything fail-loud with spanned diagnostics: unknown/duplicate frontmatter keys, malformed frontmatter,
 duplicate ids, dangling parent, parent cycle, link escaping content root, link to nonexistent page, oversized
-input, non-`.md` files in content (if rejected per open question). Nothing fails silently; nothing is
-best-effort.
+input, non-`.md` files in content. Nothing fails silently; nothing is best-effort.

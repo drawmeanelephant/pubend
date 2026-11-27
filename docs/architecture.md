@@ -25,8 +25,11 @@ The doctrine's rules, adapted from the Oliver boundary:
 
 Bend 2.0.40 import facts, verified by experiment:
 
-- `import ./x.bend as M` — works, downward relative paths only.
-- `import ../x.bend` and absolute paths — **rejected by the compiler** ("plain names" grammar).
+- `import ./x.bend as M` — works for paths below the importing file.
+- `import ../x.bend` — works for paths above the importing file in Bend 2.0.40; `src/compile.bend` imports
+  `../engine/src/parser/markdown.bend` this way. The earlier note that upward-relative imports were rejected was
+  wrong.
+- Absolute filesystem paths are **rejected by the compiler**.
 - `import 0x<hash>/main.bend as P` — content-hash package import from BendHub, checked against the hash. This is
   the analog of Oliver's hash pin in Boris's `build.zig.zon`.
 - `import name@version/main.bend` — named hub package; publishing is **public and permanent**, and `--publish`
