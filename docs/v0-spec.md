@@ -186,9 +186,20 @@ discover (IO) → read+parse batch (parallel pure map over pages)
 
 ## 7. Output
 
-- `pubend build DIR` writes `DIR/dist/` by default. The build workspace is the resolved `DIR` site root. A
-  relative `--out` is resolved against `DIR`; an absolute `--out` is accepted only when it remains inside `DIR`.
-  The output directory must not be `DIR` itself, `DIR/content`, or any descendant of `DIR/content`.
+- `pubend build DIR` writes `DIR/dist/` by default. The build workspace is the canonical resolved `DIR` site
+  root. A relative `--out` resolves against `DIR`; an absolute `--out` is accepted only when its canonical form
+  remains inside the canonical site root. The host canonicalizes the longest existing prefix of the output path
+  before making containment decisions, so case-only aliases and symlinked ancestors cannot make `content` or an
+  outside directory look distinct. The output directory must not be the site root, `DIR/content`, or any
+  descendant of `DIR/content`.
+- The final path component of `OUT` must not end with `.pubend-lock`, `.pubend-stage`, or `.pubend-previous`,
+  in any ASCII letter case. These names are reserved publication namespace. A violation is an exit-2
+  `output-forbidden` path refusal.
+- Page id `P` emits `P.html`. This mapping can be unrepresentable on every filesystem. For example, pages `a`
+  and `a.html/x` require `a.html` to be both a file and a directory. The same failure applies when a page output
+  requires a fixed host publication file such as `_pubend/manifest.json` or an ownership-marker path to be a
+  directory. The host detects these shapes before writing and fails with exit 3 and an
+  `output-path-collision` diagnostic. v0 does not define an alternate output mapping for these inputs.
 - One layout shell for all pages. In order, the shell is `<!doctype html>`, an `<html lang="en">` element, a
   head containing exactly `<meta charset="utf-8">` and `<title>`, and a body containing one
   `<nav class="pubend-nav">` followed by `<main>` around the rendered fragment. The nav contains a parent link
@@ -221,16 +232,37 @@ discover (IO) → read+parse batch (parallel pure map over pages)
   present, is an object with `start` and `end` engine-normalized UTF-8 offsets. Diagnostic classes align with
   the oracle taxonomy where the same condition exists.
 - The fixed publication sibling names are `OUT.pubend-lock`, `OUT.pubend-stage`, and `OUT.pubend-previous`.
-  An existing lock is a host failure and is never silently removed. After the lock is acquired, incomplete
-  stage trees may be removed; if output is absent and a backup exists, the backup is restored before a new
-  build proceeds. A symlinked pre-existing output path is a host failure. These fixed names are implementation
-  boundary details and never appear inside output content.
+  These fixed names are implementation boundary details and never appear inside output content. An existing lock
+  is a host failure and is never silently removed. A symlinked pre-existing output path is a host failure.
+- Backup recovery belongs to publication attempts after input scanning and compilation succeed. It is not a
+  standalone repair mode. The stage ownership marker is a regular file named `.pubend-incomplete-stage` whose
+  exact bytes are `pubend incomplete stage owner v1` plus one newline. The backup ownership marker is a regular
+  file named `.pubend-backup-owner` whose exact bytes are `pubend backup owner v1` plus one newline. After the
+  lock is acquired, a pre-existing stage is removable only when it is a plain directory carrying the exact stage
+  ownership marker. Otherwise the build fails with exit 3 and preserves that path. If output is absent and a
+  backup exists, the host restores the backup only when it is a plain directory carrying the exact backup
+  ownership marker. The host removes the backup marker before moving the backup back to `OUT`. A missing or
+  invalid marker is an exit-3 failure and the path is preserved. If output and backup both exist, the build
+  fails rather than choosing between them.
+- The host writes the incomplete-stage marker immediately after creating the stage and removes it only after
+  the stage is complete. Before swapping the stage into place, the host recursively validates the completed
+  stage without following symlinks. Validation requires regular files and directories only, the exact expected
+  directory and file sets, and exact bytes for every HTML file and the manifest. Neither ownership marker
+  remains in a successfully published output tree.
+- When moving an existing output to the fixed backup, the host renames it and then writes the backup ownership
+  marker without overwriting an existing entry. A crash in that window can leave an unmarked backup. Later
+  builds refuse to restore or remove that backup. This conservative outcome is required: refusing recovery is
+  acceptable, deleting or overwriting foreign data is not.
+- Input and output trees are required to be stable during a build. Portable Node cannot provide immunity to
+  adversarial concurrent mutation. Post-stage validation is a mitigation that can reject an already-corrupted
+  stage before publication; it is not a proof of race freedom.
 
 ## 8. Explicit non-goals for v0
 
 fragment validation, watch/serve, editor, deploy targets, search, themes, multiple layouts, assets/images
 pipeline, RSS/sitemap, RAG exports, Textile, Cooklang (fast-follow candidate, not v0), pretty URLs, frontmatter
-beyond the closed key set, parallel graph validation, incremental compilation.
+beyond the closed key set, parallel graph validation, incremental compilation, alternate output path mappings
+for file/directory collisions, adversarial concurrent-mutation immunity.
 
 ## 9. Failure behavior summary
 
