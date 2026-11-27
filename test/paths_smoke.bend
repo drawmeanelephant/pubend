@@ -100,6 +100,10 @@ def checks() -> List<&2, H.Check>:
   case_relhtml("rel-empty-target-root", "index", "", "", "\".html\"") <>
   case_relhtml("rel-empty-target-deep", "deep/page", "", "#x", "\"../.html#x\"") <>
   case_relhtml("rel-empty-self", "", "", "", "\".html\"") <>
+  case_relhtml("rel-space-encoded", "index", "sp ace", "", "\"sp%20ace.html\"") <>
+  case_relhtml("rel-unicode-encoded", "index", "café", "", "\"caf%C3%A9.html\"") <>
+  case_relhtml("rel-percent-encoded", "index", "100%", "", "\"100%25.html\"") <>
+  case_relhtml("rel-delimiters-encoded", "index", "q?x#y", "", "\"q%3Fx%23y.html\"") <>
   case_fragsuf("fragsuf-none", "x.md", "\"\"") <>
   case_fragsuf("fragsuf-one", "x.md#sec", "\"#sec\"") <>
   case_fragsuf("fragsuf-two", "x.md#a#b", "\"#a#b\"") <>

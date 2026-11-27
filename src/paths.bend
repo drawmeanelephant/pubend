@@ -189,10 +189,62 @@ def path_repeated_ups(n: Nat) -> String:
     case 1n+p:
       "../" ++ path_repeated_ups(p)
 
+# --- generated URL output encoding -------------------------------------------
+#
+# Generated href paths must be valid URL text even when page filenames contain
+# spaces, percent signs, delimiters, or Unicode.  The encoder is deliberately
+# stricter than the engine's input normalizer: `%` itself is encoded because
+# these are freshly generated output references, not author-supplied URI text.
+# `/` remains structural.  Dot characters are unreserved, so `..` navigation
+# and the `.html` suffix are unchanged.
+
+def uri_hex_digit(+x: U32) -> String:
+  ifs(String, U32.is_le(x, 9),
+    u => SCon{Char.from_u32(U32.add(x, 48)), SNil{}},
+    u => SCon{Char.from_u32(U32.add(x, 55)), SNil{}})
+
+def uri_percent_byte(+x: U32) -> String:
+  "%" ++ uri_hex_digit(U32.div(x, 16)) ++ uri_hex_digit(U32.mod(x, 16))
+
+def uri_percent_codepoint(+x: U32) -> String:
+  ifs(String, U32.is_lt(x, 128),
+    u => uri_percent_byte(x),
+    u =>
+      ifs(String, U32.is_lt(x, 2048),
+        v =>
+          uri_percent_byte(U32.add(192, U32.shrn(x, 6n))) ++
+            uri_percent_byte(U32.add(128, U32.and(x, 63))),
+        v =>
+          ifs(String, U32.is_lt(x, 65536),
+            w =>
+              uri_percent_byte(U32.add(224, U32.shrn(x, 12n))) ++
+                uri_percent_byte(U32.add(128, U32.and(U32.shrn(x, 6n), 63))) ++
+                uri_percent_byte(U32.add(128, U32.and(x, 63))),
+            w =>
+              uri_percent_byte(U32.add(240, U32.shrn(x, 18n))) ++
+                uri_percent_byte(U32.add(128, U32.and(U32.shrn(x, 12n), 63))) ++
+                uri_percent_byte(U32.add(128, U32.and(U32.shrn(x, 6n), 63))) ++
+                uri_percent_byte(U32.add(128, U32.and(x, 63))))))
+
+def uri_output_path_char(+c: Char) -> Bool:
+  Char.is_alpha(c) || Char.is_digit(c) ||
+    Char.is_eq(c, '-') || Char.is_eq(c, '.') || Char.is_eq(c, '_') ||
+    Char.is_eq(c, '~') || Char.is_eq(c, '/')
+
+def uri_encode_output_path(s: String) -> String:
+  match s:
+    case SNil{}:
+      SNil{}
+    case SCon{+h, +t}:
+      ifs(String, uri_output_path_char(h),
+        u => SCon{h, uri_encode_output_path(t)},
+        u => uri_percent_codepoint(Char.to_u32(h)) ++ uri_encode_output_path(t))
+
 def path_relative_html_fin(pair: PathSegPair, +fragment: String) -> String:
   match pair:
     case PathSegPair{+source, +target}:
-      path_repeated_ups(List.length(&2, String, source)) ++ String.join(target, "/") ++ fragment
+      +raw = path_repeated_ups(List.length(&2, String, source)) ++ String.join(target, "/")
+      uri_encode_output_path(raw) ++ fragment
 
 def path_target_html(+target_id: String, empty: Bool) -> List<&2, String>:
   match empty:

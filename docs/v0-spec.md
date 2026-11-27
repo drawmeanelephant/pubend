@@ -137,9 +137,11 @@ An internal page link written in page `F` with engine-normalized AST target `T` 
 Each emitted page carries, as part of the compile artifact model, the list of resolved internal target ids.
 Rendered output rewrites internal `.md` targets to relative `.html` paths from the emitting page to the
 resolved target page, preserving any `#fragment` suffix byte-for-byte as represented in the engine-normalized AST target.
-The relative path is lexical, contains no leading `./`, and is emitted as UTF-8 text without an additional
-publication-level percent-encoding pass; HTML-attribute escaping still applies. Ids containing spaces or
-non-ASCII characters therefore produce literal UTF-8 href text in v0:
+The relative path is lexical and contains no leading `./`. Before HTML-attribute escaping, the generated path
+(but not the author-supplied fragment suffix) is percent-encoded for URL output: structural `/` separators and
+unreserved ASCII letters/digits/`-._~` remain literal, and every other character (including `%`, space, `?`,
+`#`, and non-ASCII text) is encoded as uppercase hexadecimal UTF-8 `%XX` bytes. Output filenames themselves
+remain the literal page-id filenames:
 
 - `deep/page` linking `index.md` emits `../index.html`;
 - `index` linking `deep/page.md#x` emits `deep/page.html#x`;

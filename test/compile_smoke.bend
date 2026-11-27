@@ -339,7 +339,7 @@ def checks() -> List<&2, H.Check>:
   case_html("html-encoded-space-target",
     page("index", fm0("[S](sp%20ace.md)\n")) <>
     page("sp ace", fm0("space\n")) <> Nil{},
-    "index", shell0("index", "<p><a href=\"sp ace.html\">S</a></p>\n")) <>
+    "index", shell0("index", "<p><a href=\"sp%20ace.html\">S</a></p>\n")) <>
   case_html("html-empty-id-target",
     page("", fm0("[self](.md)\n")) <>
     page("index", fm0("[empty](.md)\n")) <> Nil{},
