@@ -76,6 +76,13 @@ def checks() -> List<&2, H.Check>:
   case_class("cls-mdx", "a/b.mdx", "pass") <>
   case_class("cls-empty", "", "pass") <>
   case_class("cls-mailto-md", "mailto:x.md", "ext") <>
+  case_class("cls-scheme-no-slashes", "https:x.md", "ext") <>
+  case_class("cls-scheme-upper", "HTTP://x.md", "ext") <>
+  case_class("cls-scheme-plus", "x+y:z.md", "ext") <>
+  case_class("cls-scheme-dotdash", "x.y-z:q.md", "ext") <>
+  case_class("cls-scheme-digit-after", "x1:q.md", "ext") <>
+  case_class("cls-not-scheme-digit", "1:q.md", "int") <>
+  case_class("cls-not-scheme-empty", ":q.md", "int") <>
   # --- resolution: internal happy paths ---
   case_res("res-sibling", "guides/a", "b.md", "ok:guides/b") <>
   case_res("res-sibling-frag", "guides/a", "b.md#sec", "ok:guides/b") <>

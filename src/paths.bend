@@ -143,3 +143,77 @@ def path_ends_md(+s: String) -> Bool:
 # three characters, and String.take counts characters.
 def path_strip_md(+s: String) -> String:
   String.take(s, Nat.sub(String.length(s), 3n))
+
+type PathSegPair is Data:
+  PathSegPair{source: List<&2, String>, target: List<&2, String>}
+
+def path_seg_pair(xs: List<&2, String>, ys: List<&2, String>) -> PathSegPair:
+  PathSegPair{xs, ys}
+
+def path_nonempty_segs.go(xs: List<&2, String>, empty: Bool) -> List<&2, String>:
+  match empty:
+    case True{}:
+      Nil{}
+    case False{}:
+      xs
+
+def path_nonempty_segs(+s: String) -> List<&2, String>:
+  path_nonempty_segs.go(String.split(s, '/'), String.is_empty(s))
+
+def path_html_segs(xs: List<&2, String>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case +h <> Nil{}:
+      String.append(h, ".html") <> Nil{}
+    case +h <> t:
+      h <> path_html_segs(t)
+
+def path_common_go(xs: List<&2, String>, ys: List<&2, String>) -> PathSegPair:
+  match xs:
+    case Nil{}:
+      path_seg_pair(xs, ys)
+    case +xh <> +xt:
+      match ys:
+        case Nil{}:
+          path_seg_pair(xh <> xt, ys)
+        case +yh <> +yt:
+          ifs(PathSegPair, String.eq(xh, yh),
+            u => path_common_go(xt, yt),
+            u => path_seg_pair(xh <> xt, yh <> yt))
+
+def path_repeated_ups(n: Nat) -> String:
+  match n:
+    case 0n:
+      ""
+    case 1n+p:
+      "../" ++ path_repeated_ups(p)
+
+def path_relative_html_fin(pair: PathSegPair, +fragment: String) -> String:
+  match pair:
+    case PathSegPair{+source, +target}:
+      path_repeated_ups(List.length(&2, String, source)) ++ String.join(target, "/") ++ fragment
+
+def path_relative_html(+source_id: String, +target_id: String, +fragment: String) -> String:
+  +source_dir = path_nonempty_segs(path_dirname(source_id))
+  +target_out = path_html_segs(path_nonempty_segs(target_id))
+  path_relative_html_fin(path_common_go(source_dir, target_out), fragment)
+
+def path_frag_index(s: String, +idx: Nat) -> Maybe<&2, Nat>:
+  match s:
+    case SNil{}:
+      None{}
+    case SCon{'#', t}:
+      Some{idx}
+    case SCon{h, t}:
+      path_frag_index(t, Nat.add(idx, 1n))
+
+def path_fragment_suffix.fin(+s: String, m: Maybe<&2, Nat>) -> String:
+  match m:
+    case None{}:
+      ""
+    case Some{+idx}:
+      String.drop(s, idx)
+
+def path_fragment_suffix(+s: String) -> String:
+  path_fragment_suffix.fin(s, path_frag_index(s, 0n))

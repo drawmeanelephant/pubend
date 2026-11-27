@@ -17,16 +17,23 @@ DIR/
 - A page is any regular file under `content/` ending in `.md`. Nested directories are allowed.
 - No other file types are read in v0. Non-`.md` files under `content/` are an error: reject the input tree,
   fail-loud.
+- Symlinked entries under `content/` are input-tree errors. The compiler neither follows nor silently skips
+  them. This applies equally to symlinks naming files, symlinks naming directories, and dangling symlinks.
 - Nothing outside `content/` is read. There is no configuration file in v0.
 - Maximum input size per page: 1 MiB. Over-limit is a content error, not a crash. The ceiling is part of the
   proof-integrated boundary pattern inherited from bendown.
+- Page bytes must be valid UTF-8. Invalid UTF-8 is a content error; lossy replacement characters must not be
+  introduced by the input boundary.
 
 ## 2. Page identity — path-derived, no aliasing
 
 - A page's **id** is its path relative to `content/`, without the `.md` extension, using forward slashes:
   `content/guides/getting-started.md` → id `guides/getting-started`.
-- Ids are exact and case-sensitive. Two files whose ids differ only by case are a duplicate-id error (portable
-  correctness on case-insensitive filesystems).
+- Ids are exact and case-sensitive. Two files whose ids differ only by ASCII letter case are a duplicate-id
+  error (portable correctness on case-insensitive filesystems).
+- Unicode portability is explicitly narrower in v0: Bend 2.0.40's `String.to_lower` is ASCII-only, so the
+  case-collision check is ASCII-only. Non-ASCII ids are legal input, but case-equivalent non-ASCII ids are
+  distinct in v0 and are not guaranteed portable across case-insensitive or normalizing filesystems.
 - There is no `id` frontmatter key and no aliasing. Ever. The id is the path.
 - Output mapping: page id `P` emits `P.html` in the output tree (`index` → `index.html`). No pretty-URL
   directory rewriting in v0.
@@ -91,10 +98,17 @@ explicitly out of scope for v0 and is not a debt item.
 
 After the engine parses a page body, each link target found in the document is classified:
 
-- **external**: contains `://`, or starts with `mailto:` — passed through untouched, outside all guarantees;
-- **internal page link**: ends in `.md` (before any `#fragment`), is a relative reference;
+- **external**: has an RFC3986-style scheme — an ASCII letter followed by zero or more ASCII letters, digits,
+  `+`, `-`, or `.`, then `:` — passed through untouched, outside all guarantees. This includes `mailto:`,
+  `https:`, `tel:`, `data:`, and every other scheme; no scheme receives special publication semantics in v0;
+- **internal page link**: has no scheme, ends in `.md` (before any `#fragment`), and is a relative reference;
 - everything else (anchors-only `#x`, absolute `/` paths, non-md file references): passed through unchecked in
   v0, documented as unverified.
+
+Target-bearing inline references produced by the engine — inline links, autolinks, and image sources — are all
+classified by the same rules. Image assets are otherwise outside the v0 assets pipeline; classifying their
+targets here prevents `.md` references from becoming unchecked publication links merely because they appear in
+image syntax.
 
 ### 5.2 Resolution
 
@@ -112,8 +126,18 @@ An internal page link written in page `F` with raw target `T` resolves as pure p
 ### 5.3 Emission
 
 Each emitted page carries, as part of the compile artifact model, the list of resolved internal target ids.
-Rendered output rewrites internal `.md` hrefs to the corresponding `.html` output paths. The emitted link list
-is what the flagship theorem quantifies over.
+Rendered output rewrites internal `.md` targets to relative `.html` paths from the emitting page to the
+resolved target page, preserving any `#fragment` suffix byte-for-byte after the fragment marker. The relative
+path is lexical and contains no leading `./`:
+
+- `deep/page` linking `index.md` emits `../index.html`;
+- `index` linking `deep/page.md#x` emits `deep/page.html#x`;
+- sibling `deep/a` linking `b.md` emits `b.html`.
+
+External and passthrough targets are emitted untouched. The emitted link list is what the flagship theorem
+quantifies over. The HTML correspondence is established implementationally by rendering through the same
+resolved-target rewrite function, and is tested end-to-end; unless and until the proof surface is extended to
+the HTML serialization itself, artifact-level HTML correspondence is not claimed as a theorem.
 
 ### 5.4 The flagship law
 
@@ -139,16 +163,27 @@ discover (IO) → read+parse batch (parallel pure map over pages)
   proof obligation, not a test hope. `--seq` exists to measure and to cross-check.
 - Determinism: same input bytes → same output bytes. No timestamps, no absolute paths, no environment leakage in
   output. Proven, not tested.
-- On any content error: nonzero exit, spanned diagnostics on stderr, and no partial output tree (write to temp +
-  atomic-ish rename, or refuse to write at all on failure — **(open)**).
+- On any content error: nonzero exit, spanned or best-available structured diagnostics on stderr, and no partial
+  output tree. Output is written to a temporary sibling tree first and renamed into place only after the complete
+  output tree has been written successfully. Build failure before the final swap leaves the prior output tree
+  untouched; temporary-tree cleanup is best-effort host IO and must not hide the original diagnostic.
 
 ## 7. Output
 
-- `pubend build DIR` writes `DIR/dist/` by default; `--out` overrides but must stay inside the workspace.
+- `pubend build DIR` writes `DIR/dist/` by default. The build workspace is the resolved `DIR` site root. A
+  relative `--out` is resolved against `DIR`; an absolute `--out` is accepted only when it remains inside `DIR`.
+  The output directory must not be `DIR` itself, `DIR/content`, or any descendant of `DIR/content`.
 - One layout shell for all pages: `<title>`, rendered fragment, simple parent/children nav derived from the
   validated forest. No theme system, no slots, no per-page layout selection in v0.
-- A thin per-build manifest `dist/_pubend/manifest.json`: emitted page ids and digests. This records contingent
-  facts only. Invariants are theorems and appear nowhere in runtime evidence.
+- The `<title>` is the frontmatter `title` when present, otherwise the text of the first level-1 heading when
+  present, otherwise the page id.
+- Parent/children navigation uses validated forest edges only. Draft pages render and may be linked to from
+  content, but draft pages are excluded from nav child listings.
+- A thin per-build manifest `_pubend/manifest.json` inside the output tree. Its schema is deterministic JSON
+  with `version: 1` and a `pages` array in emitted-page order; each page entry contains `id`, `path`, and
+  `sha256`, where `sha256` is the lowercase hex SHA-256 digest of the exact emitted HTML file bytes. The
+  manifest contains no timestamps or absolute paths. This records contingent facts only. Invariants are
+  theorems and appear nowhere in runtime evidence.
 
 ## 8. Explicit non-goals for v0
 
@@ -158,6 +193,7 @@ beyond the closed key set, parallel graph validation, incremental compilation.
 
 ## 9. Failure behavior summary
 
-Everything fail-loud with spanned diagnostics: unknown/duplicate frontmatter keys, malformed frontmatter,
-duplicate ids, dangling parent, parent cycle, link escaping content root, link to nonexistent page, oversized
-input, non-`.md` files in content. Nothing fails silently; nothing is best-effort.
+Everything fail-loud with spanned or best-available structured diagnostics: unknown/duplicate frontmatter keys,
+malformed frontmatter, duplicate ids, dangling parent, parent cycle, link escaping content root, link to
+nonexistent page, oversized input, invalid UTF-8, symlinked entries, non-`.md` files in content. Nothing fails
+silently; nothing is best-effort.

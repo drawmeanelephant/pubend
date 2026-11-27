@@ -90,9 +90,30 @@ def is_internal_base(+cb: String) -> Bool:
   Bool.and(String.ends_with(cb, ".md"),
     Bool.not(String.starts_with(cb, "/")))
 
+def uri_scheme_char(+c: Char) -> Bool:
+  Bool.or(Char.is_alpha(c), Bool.or(Char.is_digit(c),
+    Bool.or(Char.is_eq(c, '+'), Bool.or(Char.is_eq(c, '-'), Char.is_eq(c, '.')))))
+
+def uri_scheme_tail(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      False{}
+    case SCon{':', t}:
+      True{}
+    case SCon{+h, t}:
+      Model.ifs(Bool, uri_scheme_char(h),
+        u => uri_scheme_tail(t),
+        u => False{})
+
+def uri_has_scheme(+t: String) -> Bool:
+  match t:
+    case SNil{}:
+      False{}
+    case SCon{+h, tail}:
+      Bool.and(Char.is_alpha(h), uri_scheme_tail(tail))
+
 def classify_link(+t: String) -> LinkClass:
-  Model.ifs(LinkClass,
-    Bool.or(String.contains(t, "://"), String.starts_with(t, "mailto:")),
+  Model.ifs(LinkClass, uri_has_scheme(t),
     u => LExternal{},
     u => Model.ifs(LinkClass, is_internal_base(class_base(t)),
       u2 => LInternal{},
