@@ -404,10 +404,9 @@ def percent_decode_path(text):
         if i + 2 >= len(text):
             return None, "link-malformed-percent"
         hx = text[i + 1:i + 3]
-        try:
-            pending.append(int(hx, 16))
-        except ValueError:
+        if not all(c in "0123456789abcdefABCDEF" for c in hx):
             return None, "link-malformed-percent"
+        pending.append(int(hx, 16))
         i += 3
     if not flush():
         return None, "link-invalid-percent-utf8"
