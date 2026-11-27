@@ -94,6 +94,17 @@ def valid_forest() -> List<&2, G.RawNode>:
   rn("b", par("a")) <>
   rn("c", par("b")) <> Nil{}
 
+def gn(+id: String, parent: Maybe<&2, String>, +depth: Nat) -> G.GraphNode:
+  G.GraphNode{id, parent, depth}
+
+def vg(nodes: List<&2, G.GraphNode>) -> G.ValidatedGraph:
+  G.ValidatedGraph{nodes}
+
+def forged_case_collision_cert() -> Bool:
+  G.certificate_check(vg(
+    gn("Guide", no_parent(), 0n) <>
+    gn("guide", no_parent(), 0n) <> Nil{}))
+
 def ids_str_go(xs: List<&2, String>) -> String:
   match xs:
     case Nil{}: ""
@@ -156,6 +167,7 @@ def checks() -> List<&2, H.Check>:
     rn("a", no_parent()) <>
     rn("b", par("a")) <>
     rn("c", par("b")) <> Nil{}, True{}) <>
+  H.chkb("cert-direct-case-collision", forged_case_collision_cert(), False{}) <>
   # --- depth values ---
   case_depth("depth-root", "a",
     rn("a", no_parent()) <>

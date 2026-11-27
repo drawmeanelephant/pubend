@@ -364,16 +364,16 @@ def find_depth(+id: String, nodes: List<&2, GraphNode>) -> Maybe<&2, Nat>:
             u => some_nat(depth),
             u => find_depth(id, t))
 
-def id_absent(+id: String, nodes: List<&2, GraphNode>) -> Bool:
+def id_case_absent(+id: String, nodes: List<&2, GraphNode>) -> Bool:
   match nodes:
     case Nil{}:
       True{}
     case +h <> t:
       match h:
         case GraphNode{+nid, parent, depth}:
-          Model.ifs(Bool, String.eq(id, nid),
+          Model.ifs(Bool, String.eq(String.to_lower(id), String.to_lower(nid)),
             u => False{},
-            u => id_absent(id, t))
+            u => id_case_absent(id, t))
 
 def ids_unique(nodes: List<&2, GraphNode>) -> Bool:
   match nodes:
@@ -382,7 +382,7 @@ def ids_unique(nodes: List<&2, GraphNode>) -> Bool:
     case +h <> +t:
       match h:
         case GraphNode{+nid, parent, depth}:
-          Bool.and(id_absent(nid, t), ids_unique(t))
+          Bool.and(id_case_absent(nid, t), ids_unique(t))
 
 def depth_parent_check(+all: List<&2, GraphNode>, +depth: Nat, m: Maybe<&2, Nat>) -> Bool:
   match m:
@@ -407,8 +407,9 @@ def depths_coherent(nodes: List<&2, GraphNode>, +all: List<&2, GraphNode>) -> Bo
         case GraphNode{+nid, +parent, +depth}:
           Bool.and(depth_coherent_node(all, nid, parent, depth), depths_coherent(t, all))
 
-# A depth assignment certifies forest shape: ids unique, every parent
-# resolves, and depth(node) = depth(parent) + 1 with roots at 0.  Such an
+# A depth assignment certifies forest shape: ids unique up to letter case,
+# every parent resolves, and depth(node) = depth(parent) + 1 with roots at
+# 0.  Such an
 # assignment exists IF AND ONLY IF the parent structure is an acyclic
 # forest — so cycles, self-parents, and dangling parents are all
 # unrepresentable in an artifact passing this checker.  Checking is
