@@ -39,6 +39,10 @@ Consequence: during development, bendown must physically live inside pubend's tr
 - vendored copy with manual sync — simpler, but invites drift exactly like a regex around the parser would.
 - monorepo merge — abandons the engine as a separately consumable product, which contradicts the doctrine.
 
+Current dependency pin: `engine/` is the bendown git submodule at commit
+`41733d0c15f66b7bca400779a882c52ffa780ef0` (upstream `main` as of 2026-11-27). A scratch root file containing
+`import ./engine/src/ast.bend as Ast` typechecked with `ALL PROOFS CHECK` before the scratch file was removed.
+
 Release discipline, later: publish bendown to BendHub, pin pubend to `0x<hash>`. Not now — publishes are
 permanent and public, and both sides are moving.
 
