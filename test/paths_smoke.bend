@@ -97,6 +97,9 @@ def checks() -> List<&2, H.Check>:
   case_relhtml("rel-deeper-cousin", "deep/nested/a", "other/deep/b", "", "\"../../other/deep/b.html\"") <>
   case_relhtml("rel-file-dir-collision", "a/b", "a", "", "\"../a.html\"") <>
   case_relhtml("rel-self", "a", "a", "#self", "\"a.html#self\"") <>
+  case_relhtml("rel-empty-target-root", "index", "", "", "\".html\"") <>
+  case_relhtml("rel-empty-target-deep", "deep/page", "", "#x", "\"../.html#x\"") <>
+  case_relhtml("rel-empty-self", "", "", "", "\".html\"") <>
   case_fragsuf("fragsuf-none", "x.md", "\"\"") <>
   case_fragsuf("fragsuf-one", "x.md#sec", "\"#sec\"") <>
   case_fragsuf("fragsuf-two", "x.md#a#b", "\"#a#b\"") <>

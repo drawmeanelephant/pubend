@@ -194,9 +194,16 @@ def path_relative_html_fin(pair: PathSegPair, +fragment: String) -> String:
     case PathSegPair{+source, +target}:
       path_repeated_ups(List.length(&2, String, source)) ++ String.join(target, "/") ++ fragment
 
+def path_target_html(+target_id: String, empty: Bool) -> List<&2, String>:
+  match empty:
+    case True{}:
+      ".html" <> Nil{}
+    case False{}:
+      path_html_segs(path_nonempty_segs(target_id))
+
 def path_relative_html(+source_id: String, +target_id: String, +fragment: String) -> String:
   +source_dir = path_nonempty_segs(path_dirname(source_id))
-  +target_out = path_html_segs(path_nonempty_segs(target_id))
+  +target_out = path_target_html(target_id, String.is_empty(target_id))
   path_relative_html_fin(path_common_go(source_dir, target_out), fragment)
 
 def path_frag_index(s: String, +idx: Nat) -> Maybe<&2, Nat>:

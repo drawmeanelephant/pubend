@@ -5,8 +5,7 @@ import ./src/compile.bend as C
 import ./src/graph.bend as Graph
 import ./src/links.bend as L
 import ./src/paths.bend as P
-import ./engine/src/parser/markdown.bend as Markdown
-import ./engine/src/render/html.bend as Html
+import ./src/percent.bend as Pct
 import ./engine/src/document_links.bend as DocumentLinks
 import ./LAWS.bend as Laws
 
@@ -15,10 +14,12 @@ import ./LAWS.bend as Laws
 # compile_deterministic is reflexivity — trivially true of any pure def, kept
 # as a regression pin against effect leakage.
 #
-# link_integrity is deliberately OPEN. The compile stub makes it vacuous, and
-# a vacuous proof is worthless; the law must be proved against the real
-# pipeline. Until then `bend PROOF.bend` correctly prints SOME PROOFS FAIL —
-# that is the ratchet, not a broken build.
+# link_integrity is proved against the real graph-centered pipeline below.
+# The proof follows the membership-only LinkOk gate through percent decoding,
+# path normalization, and id membership, then bridges validated graph node ids
+# to the emitted pages produced solely from that validated graph.  HTML output
+# correspondence remains implementation/test-backed and is deliberately not a
+# theorem here.
 
 def Laws.compile_deterministic(config, pages):
   {==}
@@ -136,7 +137,7 @@ def meps_inp(+l: String, +ps: List<&2, Model.EmittedPage>, m: Maybe<&2, List<&2,
     case Some{x}: {Model.id_in_pages(l, ps) == True{} : Bool}
     case None{}: Unit
 
-def mpps_law(+pub: Model.Publication, m: Maybe<&2, List<&2, C.PagePrep>>) -> Type:
+def mpps_law(+pub: Model.Publication, m: Maybe<&2, List<&2, Graph.RawNode>>) -> Type:
   match m:
     case Some{x}: {Model.publication_links_resolve(pub) == True{} : Bool}
     case None{}: Unit
@@ -180,9 +181,9 @@ def ep_links(+e: Model.EmittedPage) -> List<&2, String>:
   match e:
     case Model.EmittedPage{id, +links, html}: links
 
-def pp_id2(+p: C.PagePrep) -> String:
+def gn_id2(+p: Graph.GraphNode) -> String:
   match p:
-    case C.PagePrep{+id, parent, title, body}: id
+    case Graph.GraphNode{+id, parent, depth, title, status, document}: id
 
 # --- eliminator lemmas over model.bend's ifs-based helpers --------------------
 
@@ -274,6 +275,19 @@ def li_norm(+src: String, +t: String, +ids: List<&2, String>, n: P.PathResult, +
       li_mem_m(src, t, ids, P.path_strip_md(path),
         L.str_member(P.path_strip_md(path), ids), i, ev)
 
+def li_decode(+src: String, +t: String, +ids: List<&2, String>, d: Pct.PercentResult, +i: String,
+  ev: {L.resolve_decode(src, t, ids, d) == L.LinkOk{i} : L.LinkOutcome}) ->
+  {L.str_member(i, ids) == True{} : Bool}:
+  match d:
+    case Pct.PercentMalformed{}:
+      %ev : lo_disc_mem(i, ids, _)
+      Unit{}
+    case Pct.PercentInvalidUtf8{}:
+      %ev : lo_disc_mem(i, ids, _)
+      Unit{}
+    case Pct.PercentOk{+decoded}:
+      li_norm(src, t, ids, P.path_normalize(P.path_join(P.path_dirname(src), decoded)), i, ev)
+
 def li_query(+src: String, +t: String, +ids: List<&2, String>, q: Bool, +i: String,
   ev: {L.resolve_query(src, t, ids, q) == L.LinkOk{i} : L.LinkOutcome}) ->
   {L.str_member(i, ids) == True{} : Bool}:
@@ -282,7 +296,7 @@ def li_query(+src: String, +t: String, +ids: List<&2, String>, q: Bool, +i: Stri
       %ev : lo_disc_mem(i, ids, _)
       Unit{}
     case False{}:
-      li_norm(src, t, ids, P.path_normalize(P.path_join(P.path_dirname(src), P.path_strip_fragment(t))), i, ev)
+      li_decode(src, t, ids, Pct.percent_decode(P.path_strip_fragment(t)), i, ev)
 
 def li_cls(+src: String, +t: String, +ids: List<&2, String>, c: L.LinkClass, +i: String,
   ev: {L.resolve_cls(src, t, ids, c) == L.LinkOk{i} : L.LinkOutcome}) ->
@@ -304,18 +318,10 @@ def li_one(+src: String, +t: String, +ids: List<&2, String>, +i: String,
   {L.str_member(i, ids) == True{} : Bool}:
   li_cls(src, t, ids, L.classify_link(t), i, ev)
 
-# str_member over an equal id set — transport through ip evidence.
-def mem_to_prep(+id: String, +ids: List<&2, String>, +pps: List<&2, C.PagePrep>,
-  ip: {ids == C.prep_ids(pps) : List<&2, String>},
-  evm: {L.str_member(id, ids) == True{} : Bool}) ->
-  {L.str_member(id, C.prep_ids(pps)) == True{} : Bool}:
-  %ip : {L.str_member(id, _) == True{} : Bool}
-  evm
-
 # --- emitted-page identity ---------------------------------------------------
 #
-# The emitted id and link list are literally the prep id and the verified
-# resolution — extracted here as equalities for the bridge lemmas.
+# The emitted id and link list are literally the validated node id and the
+# verified resolution — extracted here as equalities for the bridge lemmas.
 
 def unl_hd(+d: Model.EmittedPage, m: Maybe<&2, List<&2, Model.EmittedPage>>) -> Model.EmittedPage:
   match m:
@@ -383,14 +389,14 @@ def lem_efin_id(+id2: String, +html: String, r: L.LinkResolution, +e: Model.Emit
     case L.LinkResolution{+lids, +errors}:
       lem_egate_id(id2, lids, html, List.is_empty(&2, L.LinkError, errors), e, ev)
 
-# The emitted page's id is the prep page's id.
-def lem_eid(p: C.PagePrep, +ids: List<&2, String>, +e: Model.EmittedPage,
+# The emitted page's id is the validated graph node's id.
+def lem_eid(p: Graph.GraphNode, +ids: List<&2, Graph.GraphNode>, +e: Model.EmittedPage,
   +ev: {C.emit_one(ids, p) == Some{e} : Maybe<&2, Model.EmittedPage>}) ->
-  {ep_id(e) == pp_id2(p) : String}:
+  {ep_id(e) == gn_id2(p) : String}:
   match p:
-    case C.PagePrep{+id, parent, title, +body}:
-      lem_efin_id(id, Html.render_document(Markdown.parse_markdown(body)),
-        L.resolve_page_links(id, DocumentLinks.document_link_targets(Markdown.parse_markdown(body)), ids), e, ev)
+    case Graph.GraphNode{+id, +parent, depth, +title, status, +document}:
+      lem_efin_id(id, C.render_node_html(ids, id, parent, title, document),
+        L.resolve_page_links(id, DocumentLinks.document_link_targets(document), Graph.graph_ids_go(ids)), e, ev)
 
 # --- the membership bridge ------------------------------------------------------
 #
@@ -421,7 +427,7 @@ def eq_str_tr(+l: String, +a: String, +b: String,
   %eab : {String.eq(l, _) == True{} : Bool}
   ev
 
-def ep_tr(+ids: List<&2, String>, +x: C.PagePrep, +ep: Model.EmittedPage, +phd: Model.EmittedPage,
+def ep_tr(+ids: List<&2, Graph.GraphNode>, +x: Graph.GraphNode, +ep: Model.EmittedPage, +phd: Model.EmittedPage,
   eeq: {ep == phd : Model.EmittedPage},
   ev: {C.emit_one(ids, x) == Some{ep} : Maybe<&2, Model.EmittedPage>}) ->
   {C.emit_one(ids, x) == Some{phd} : Maybe<&2, Model.EmittedPage>}:
@@ -431,23 +437,23 @@ def ep_tr(+ids: List<&2, String>, +x: C.PagePrep, +ep: Model.EmittedPage, +phd: 
 # The head-position answer of the bridge induction: the str_member hit is at
 # the head prep page, whose emitted page is the head of the emitted list.
 # Non-recursive — defined before the worker that calls it.
-def lem_BW_herex(+l: String, +x: C.PagePrep, +ids: List<&2, String>,
+def lem_BW_herex(+l: String, +x: Graph.GraphNode, +ids: List<&2, Graph.GraphNode>,
   +ep: Model.EmittedPage, +rest: List<&2, Model.EmittedPage>,
   +phd: Model.EmittedPage, +ptl: List<&2, Model.EmittedPage>, +peid: String,
   +e1: {C.emit_cons(Some{ep}, Some{rest}) == Some{phd <> ptl} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +ez: {String.eq(l, pp_id2(x)) == True{} : Bool},
+  +ez: {String.eq(l, gn_id2(x)) == True{} : Bool},
   +epe: {ep_id(phd) == peid : String},
   +ev1: {C.emit_one(ids, x) == Some{ep} : Maybe<&2, Model.EmittedPage>}) ->
   {Model.ifs(Bool, String.eq(l, peid), u => True{}, u => Model.id_in_pages(l, ptl)) == True{} : Bool}:
   +epeq = cons_hd_eq(ep, rest, phd, ptl, e1)
   +eidev = lem_eid(x, ids, phd, ep_tr(ids, x, ep, phd, epeq, ev1))
-  +xpe = Equal.trans(String, pp_id2(x), ep_id(phd), peid,
-    Equal.sym(String, ep_id(phd), pp_id2(x), eidev), epe)
-  inp_here(l, peid, ptl, String.eq(l, peid), eq_str_tr(l, pp_id2(x), peid, xpe, ez))
+  +xpe = Equal.trans(String, gn_id2(x), ep_id(phd), peid,
+    Equal.sym(String, ep_id(phd), gn_id2(x), eidev), epe)
+  inp_here(l, peid, ptl, String.eq(l, peid), eq_str_tr(l, gn_id2(x), peid, xpe, ez))
 
 # emit_all(ids, x2<>xt2) == Some{rest} composed with rest == ptl gives the
 # tail's own emit evidence — i.e. emit_cons(emit_one(x2), emit_all(xt2)).
-def ea_tr2(+ids: List<&2, String>, +x2: C.PagePrep, +xt2: List<&2, C.PagePrep>,
+def ea_tr2(+ids: List<&2, Graph.GraphNode>, +x2: Graph.GraphNode, +xt2: List<&2, Graph.GraphNode>,
   +rest: List<&2, Model.EmittedPage>, +ptl: List<&2, Model.EmittedPage>,
   e: {rest == ptl : List<&2, Model.EmittedPage>},
   ev: {C.emit_all(ids, x2 <> xt2) == Some{rest} : Maybe<&2, List<&2, Model.EmittedPage>>}) ->
@@ -459,12 +465,12 @@ def ea_tr2(+ids: List<&2, String>, +x2: C.PagePrep, +xt2: List<&2, C.PagePrep>,
 # generalized Maybe params (m1, mrest); the str_member disjunction rides
 # along as Bool.or(z, tail).  Self-recursive on xt — Bend forbids forward
 # references, so the whole case tree lives in one def.
-def lem_BW(+l: String, xt: List<&2, C.PagePrep>, +x: C.PagePrep, +ids: List<&2, String>,
+def lem_BW(+l: String, xt: List<&2, Graph.GraphNode>, +x: Graph.GraphNode, +ids: List<&2, Graph.GraphNode>,
   m1: Maybe<&2, Model.EmittedPage>, mrest: Maybe<&2, List<&2, Model.EmittedPage>>,
   z: Bool, ps: List<&2, Model.EmittedPage>,
   +e1: {C.emit_cons(m1, mrest) == Some{ps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +e2: {Bool.or(z, L.str_member(l, C.prep_ids(xt))) == True{} : Bool},
-  +ez: {z == String.eq(l, pp_id2(x)) : Bool},
+  +e2: {Bool.or(z, L.str_member(l, Graph.graph_ids_go(xt))) == True{} : Bool},
+  +ez: {z == String.eq(l, gn_id2(x)) : Bool},
   +ev1: {C.emit_one(ids, x) == m1 : Maybe<&2, Model.EmittedPage>},
   +evrest: {C.emit_all(ids, xt) == mrest : Maybe<&2, List<&2, Model.EmittedPage>>}) ->
   {Model.id_in_pages(l, ps) == True{} : Bool}:
@@ -491,13 +497,13 @@ def lem_BW(+l: String, xt: List<&2, C.PagePrep>, +x: C.PagePrep, +ids: List<&2, 
                         case Model.EmittedPage{+peid, +plinks, +phtml}:
                           lem_BW_herex(l, x, ids, ep, rest,
                             Model.EmittedPage{peid, plinks, phtml}, ptl, peid, e1,
-                            Equal.sym(Bool, z, String.eq(l, pp_id2(x)), ez), {==}, ev1)
+                            Equal.sym(Bool, z, String.eq(l, gn_id2(x)), ez), {==}, ev1)
                 case False{}:
                   %e2 : inp_nil_disc(l, ps, _)
                   Unit{}
     case +x2 <> +xt2:
       match x2:
-        case C.PagePrep{+x2id, parent2, title2, body2}:
+        case Graph.GraphNode{+x2id, +parent2, +depth2, +title2, +status2, +document2}:
           match m1:
             case None{}:
               %e1 : meps_inp(l, ps, _)
@@ -519,7 +525,7 @@ def lem_BW(+l: String, xt: List<&2, C.PagePrep>, +x: C.PagePrep, +ids: List<&2, 
                             case Model.EmittedPage{+peid, +plinks, +phtml}:
                               lem_BW_herex(l, x, ids, ep, rest,
                                 Model.EmittedPage{peid, plinks, phtml}, ptl, peid, e1,
-                                Equal.sym(Bool, z, String.eq(l, pp_id2(x)), ez), {==}, ev1)
+                                Equal.sym(Bool, z, String.eq(l, gn_id2(x)), ez), {==}, ev1)
                     case False{}:
                       match ps:
                         case Nil{}:
@@ -531,18 +537,18 @@ def lem_BW(+l: String, xt: List<&2, C.PagePrep>, +x: C.PagePrep, +ids: List<&2, 
                               +rteq = cons_tl_eq(ep, rest,
                                 Model.EmittedPage{peid, plinks, phtml}, ptl, e1)
                               inp_tail(l, peid, ptl, String.eq(l, peid),
-                                lem_BW(l, xt2, C.PagePrep{x2id, parent2, title2, body2}, ids,
-                                  C.emit_one(ids, C.PagePrep{x2id, parent2, title2, body2}),
+                                lem_BW(l, xt2, Graph.GraphNode{x2id, parent2, depth2, title2, status2, document2}, ids,
+                                  C.emit_one(ids, Graph.GraphNode{x2id, parent2, depth2, title2, status2, document2}),
                                   C.emit_all(ids, xt2),
                                   String.eq(l, x2id), ptl,
-                                  ea_tr2(ids, C.PagePrep{x2id, parent2, title2, body2}, xt2,
+                                  ea_tr2(ids, Graph.GraphNode{x2id, parent2, depth2, title2, status2, document2}, xt2,
                                     rest, ptl, rteq, evrest),
                                   e2, {==}, {==}, {==}))
 
-def lem_B(+l: String, xs: List<&2, C.PagePrep>, +ids: List<&2, String>,
+def lem_B(+l: String, xs: List<&2, Graph.GraphNode>, +ids: List<&2, Graph.GraphNode>,
   ps: List<&2, Model.EmittedPage>,
   +e1: {C.emit_all(ids, xs) == Some{ps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +e2: {L.str_member(l, C.prep_ids(xs)) == True{} : Bool}) ->
+  +e2: {L.str_member(l, Graph.graph_ids_go(xs)) == True{} : Bool}) ->
   {Model.id_in_pages(l, ps) == True{} : Bool}:
   match xs:
     case Nil{}:
@@ -550,9 +556,9 @@ def lem_B(+l: String, xs: List<&2, C.PagePrep>, +ids: List<&2, String>,
       Unit{}
     case +x <> +xt:
       match x:
-        case C.PagePrep{+xid, parent, title, body}:
-          lem_BW(l, xt, C.PagePrep{xid, parent, title, body}, ids,
-            C.emit_one(ids, C.PagePrep{xid, parent, title, body}), C.emit_all(ids, xt),
+        case Graph.GraphNode{+xid, +parent, +depth, +title, +status, +document}:
+          lem_BW(l, xt, Graph.GraphNode{xid, parent, depth, title, status, document}, ids,
+            C.emit_one(ids, Graph.GraphNode{xid, parent, depth, title, status, document}), C.emit_all(ids, xt),
             String.eq(l, xid), ps, e1, e2, {==}, {==}, {==})
 
 # Tail evidence for the Nil-resolution case: the resolved-id half is empty.
@@ -568,14 +574,13 @@ def lar_of_nil(+fps: List<&2, Model.EmittedPage>, +rs: List<&2, String>, +es: Li
 # membership gate, so the emitted link list resolves element-wise against
 # the full emitted page set.  lem_B supplies the member→in_pages bridge.
 
-def li_resW(+src: String, t: List<&2, String>, +h: String, +ids: List<&2, String>,
+def li_resW(+src: String, t: List<&2, String>, +h: String,
   o: L.LinkOutcome, rest: L.LinkResolution, r: L.LinkResolution,
-  +fpps: List<&2, C.PagePrep>, +fps: List<&2, Model.EmittedPage>,
-  +ip: {ids == C.prep_ids(fpps) : List<&2, String>},
-  +eve: {C.emit_all(ids, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +evr: {L.res_cons(src, ids, o, rest) == r : L.LinkResolution},
-  +evo: {L.resolve_one(src, h, ids) == o : L.LinkOutcome},
-  +evrest: {L.res_go(src, t, ids) == rest : L.LinkResolution}) ->
+  +fpps: List<&2, Graph.GraphNode>, +fps: List<&2, Model.EmittedPage>,
+  +eve: {C.emit_all(fpps, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
+  +evr: {L.res_cons(src, Graph.graph_ids_go(fpps), o, rest) == r : L.LinkResolution},
+  +evo: {L.resolve_one(src, h, Graph.graph_ids_go(fpps)) == o : L.LinkOutcome},
+  +evrest: {L.res_go(src, t, Graph.graph_ids_go(fpps)) == rest : L.LinkResolution}) ->
   {Model.links_all_resolve(fps, res_ids(r)) == True{} : Bool}:
   match t:
     case Nil{}:
@@ -595,54 +600,52 @@ def li_resW(+src: String, t: List<&2, String>, +h: String, +ids: List<&2, String
             case L.LinkResolution{+rs, +es}:
               %evr : {Model.links_all_resolve(fps, res_ids(_)) == True{} : Bool}
               lar_cons(fps, rs, Model.id_in_pages(i, fps),
-                lem_B(i, fpps, ids, fps, eve,
-                  mem_to_prep(i, ids, fpps, ip, li_one(src, h, ids, i, evo))),
+                lem_B(i, fpps, fpps, fps, eve,
+                  li_one(src, h, Graph.graph_ids_go(fpps), i, evo)),
                 lar_of_nil(fps, rs, es, evrest))
     case +h2 <> +t2:
       match o:
         case L.LinkPass{}:
           %evr : {Model.links_all_resolve(fps, res_ids(_)) == True{} : Bool}
-          li_resW(src, t2, h2, ids, L.resolve_one(src, h2, ids), L.res_go(src, t2, ids), rest,
-            fpps, fps, ip, eve, evrest, {==}, {==})
+          li_resW(src, t2, h2, L.resolve_one(src, h2, Graph.graph_ids_go(fpps)), L.res_go(src, t2, Graph.graph_ids_go(fpps)), rest,
+            fpps, fps, eve, evrest, {==}, {==})
         case L.LinkErr{+e}:
           match rest:
             case L.LinkResolution{+rs, +es}:
               %evr : {Model.links_all_resolve(fps, res_ids(_)) == True{} : Bool}
-              li_resW(src, t2, h2, ids, L.resolve_one(src, h2, ids), L.res_go(src, t2, ids),
-                L.LinkResolution{rs, es}, fpps, fps, ip, eve, evrest, {==}, {==})
+              li_resW(src, t2, h2, L.resolve_one(src, h2, Graph.graph_ids_go(fpps)), L.res_go(src, t2, Graph.graph_ids_go(fpps)),
+                L.LinkResolution{rs, es}, fpps, fps, eve, evrest, {==}, {==})
         case L.LinkOk{+i}:
           match rest:
             case L.LinkResolution{+rs, +es}:
               %evr : {Model.links_all_resolve(fps, res_ids(_)) == True{} : Bool}
               lar_cons(fps, rs, Model.id_in_pages(i, fps),
-                lem_B(i, fpps, ids, fps, eve,
-                  mem_to_prep(i, ids, fpps, ip, li_one(src, h, ids, i, evo))),
-                li_resW(src, t2, h2, ids, L.resolve_one(src, h2, ids), L.res_go(src, t2, ids),
-                  L.LinkResolution{rs, es}, fpps, fps, ip, eve, evrest, {==}, {==}))
+                lem_B(i, fpps, fpps, fps, eve,
+                  li_one(src, h, Graph.graph_ids_go(fpps), i, evo)),
+                li_resW(src, t2, h2, L.resolve_one(src, h2, Graph.graph_ids_go(fpps)), L.res_go(src, t2, Graph.graph_ids_go(fpps)),
+                  L.LinkResolution{rs, es}, fpps, fps, eve, evrest, {==}, {==}))
 
-def li_res(+src: String, ts: List<&2, String>, +ids: List<&2, String>, r: L.LinkResolution,
-  +fpps: List<&2, C.PagePrep>, +fps: List<&2, Model.EmittedPage>,
-  +ip: {ids == C.prep_ids(fpps) : List<&2, String>},
-  +eve: {C.emit_all(ids, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +evr: {L.res_go(src, ts, ids) == r : L.LinkResolution}) ->
+def li_res(+src: String, ts: List<&2, String>, r: L.LinkResolution,
+  +fpps: List<&2, Graph.GraphNode>, +fps: List<&2, Model.EmittedPage>,
+  +eve: {C.emit_all(fpps, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
+  +evr: {L.res_go(src, ts, Graph.graph_ids_go(fpps)) == r : L.LinkResolution}) ->
   {Model.links_all_resolve(fps, res_ids(r)) == True{} : Bool}:
   match ts:
     case Nil{}:
       %evr : {Model.links_all_resolve(fps, res_ids(_)) == True{} : Bool}
       {==}
     case +h <> +t:
-      li_resW(src, t, h, ids, L.resolve_one(src, h, ids), L.res_go(src, t, ids), r,
-        fpps, fps, ip, eve, evr, {==}, {==})
+      li_resW(src, t, h, L.resolve_one(src, h, Graph.graph_ids_go(fpps)), L.res_go(src, t, Graph.graph_ids_go(fpps)), r,
+        fpps, fps, eve, evr, {==}, {==})
 
 # --- per-page emitted links ----------------------------------------------------
 
 def lem_efin(+id2: String, +html: String, +ts: List<&2, String>,
   +lids: List<&2, String>, +errors: List<&2, L.LinkError>, clean: Bool,
-  +e: Model.EmittedPage, +fpps: List<&2, C.PagePrep>, +ids: List<&2, String>,
+  +e: Model.EmittedPage, +fpps: List<&2, Graph.GraphNode>,
   +fps: List<&2, Model.EmittedPage>,
-  +ip: {ids == C.prep_ids(fpps) : List<&2, String>},
-  +eve: {C.emit_all(ids, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +evr: {L.res_go(id2, ts, ids) == L.LinkResolution{lids, errors} : L.LinkResolution},
+  +eve: {C.emit_all(fpps, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
+  +evr: {L.res_go(id2, ts, Graph.graph_ids_go(fpps)) == L.LinkResolution{lids, errors} : L.LinkResolution},
   +ev: {C.emit_gate(id2, lids, html, clean) == Some{e} : Maybe<&2, Model.EmittedPage>}) ->
   {Model.links_all_resolve(fps, ep_links(e)) == True{} : Bool}:
   match clean:
@@ -651,34 +654,32 @@ def lem_efin(+id2: String, +html: String, +ts: List<&2, String>,
       Unit{}
     case True{}:
       %ev : {Model.links_all_resolve(fps, unep_links(lids, _)) == True{} : Bool}
-      li_res(id2, ts, ids, L.LinkResolution{lids, errors}, fpps, fps, ip, eve, evr)
+      li_res(id2, ts, L.LinkResolution{lids, errors}, fpps, fps, eve, evr)
 
 def lem_efin_r(+id2: String, +html: String, +ts: List<&2, String>, r: L.LinkResolution,
-  +e: Model.EmittedPage, +fpps: List<&2, C.PagePrep>, +ids: List<&2, String>,
+  +e: Model.EmittedPage, +fpps: List<&2, Graph.GraphNode>,
   +fps: List<&2, Model.EmittedPage>,
-  +ip: {ids == C.prep_ids(fpps) : List<&2, String>},
-  +eve: {C.emit_all(ids, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +evr: {L.res_go(id2, ts, ids) == r : L.LinkResolution},
+  +eve: {C.emit_all(fpps, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
+  +evr: {L.res_go(id2, ts, Graph.graph_ids_go(fpps)) == r : L.LinkResolution},
   +ev: {C.emit_fin(id2, html, r) == Some{e} : Maybe<&2, Model.EmittedPage>}) ->
   {Model.links_all_resolve(fps, ep_links(e)) == True{} : Bool}:
   match r:
     case L.LinkResolution{+lids, +errors}:
       lem_efin(id2, html, ts, lids, errors, List.is_empty(&2, L.LinkError, errors),
-        e, fpps, ids, fps, ip, eve, evr, ev)
+        e, fpps, fps, eve, evr, ev)
 
-# One prep page's emitted links all resolve against the full emitted set.
-def lem_elinks(p: C.PagePrep, +ids: List<&2, String>, +e: Model.EmittedPage,
-  +fpps: List<&2, C.PagePrep>, +fps: List<&2, Model.EmittedPage>,
-  +ip: {ids == C.prep_ids(fpps) : List<&2, String>},
-  +eve: {C.emit_all(ids, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +ev: {C.emit_one(ids, p) == Some{e} : Maybe<&2, Model.EmittedPage>}) ->
+# One validated graph node's emitted links all resolve against the full emitted set.
+def lem_elinks(p: Graph.GraphNode, +e: Model.EmittedPage,
+  +fpps: List<&2, Graph.GraphNode>, +fps: List<&2, Model.EmittedPage>,
+  +eve: {C.emit_all(fpps, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
+  +ev: {C.emit_one(fpps, p) == Some{e} : Maybe<&2, Model.EmittedPage>}) ->
   {Model.links_all_resolve(fps, ep_links(e)) == True{} : Bool}:
   match p:
-    case C.PagePrep{+id, parent, title, +body}:
-      lem_efin_r(id, Html.render_document(Markdown.parse_markdown(body)),
-        DocumentLinks.document_link_targets(Markdown.parse_markdown(body)),
-        L.resolve_page_links(id, DocumentLinks.document_link_targets(Markdown.parse_markdown(body)), ids),
-        e, fpps, ids, fps, ip, eve, {==}, ev)
+    case Graph.GraphNode{+id, +parent, depth, +title, status, +document}:
+      lem_efin_r(id, C.render_node_html(fpps, id, parent, title, document),
+        DocumentLinks.document_link_targets(document),
+        L.resolve_page_links(id, DocumentLinks.document_link_targets(document), Graph.graph_ids_go(fpps)),
+        e, fpps, fps, eve, {==}, ev)
 
 # --- the emit_all fold ----------------------------------------------------------
 
@@ -715,15 +716,14 @@ def par_tl_tr(+fps: List<&2, Model.EmittedPage>, +rest: List<&2, Model.EmittedPa
 
 # The worker.  fpps/ids/fps are the FULL prep/id/emitted sets, constant
 # through the recursion; x/xt are the current head/tail of the prep walk.
-def lem_ea(+fpps: List<&2, C.PagePrep>, +ids: List<&2, String>, +fps: List<&2, Model.EmittedPage>,
-  +ip: {ids == C.prep_ids(fpps) : List<&2, String>},
-  +eve: {C.emit_all(ids, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  xt: List<&2, C.PagePrep>, +x: C.PagePrep,
+def lem_ea(+fpps: List<&2, Graph.GraphNode>, +fps: List<&2, Model.EmittedPage>,
+  +eve: {C.emit_all(fpps, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
+  xt: List<&2, Graph.GraphNode>, +x: Graph.GraphNode,
   m1: Maybe<&2, Model.EmittedPage>, mrest: Maybe<&2, List<&2, Model.EmittedPage>>,
   ps: List<&2, Model.EmittedPage>,
   +e1: {C.emit_cons(m1, mrest) == Some{ps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  +ev1: {C.emit_one(ids, x) == m1 : Maybe<&2, Model.EmittedPage>},
-  +evrest: {C.emit_all(ids, xt) == mrest : Maybe<&2, List<&2, Model.EmittedPage>>}) ->
+  +ev1: {C.emit_one(fpps, x) == m1 : Maybe<&2, Model.EmittedPage>},
+  +evrest: {C.emit_all(fpps, xt) == mrest : Maybe<&2, List<&2, Model.EmittedPage>>}) ->
   {Model.pages_all_resolve(ps, fps) == True{} : Bool}:
   match xt:
     case Nil{}:
@@ -751,9 +751,9 @@ def lem_ea(+fpps: List<&2, C.PagePrep>, +ids: List<&2, String>, +fps: List<&2, M
                           +rteq = cons_tl_eq(ep, Nil{},
                             Model.EmittedPage{peid, plinks, phtml}, ptl, e1)
                           par_cons(fps, ptl, Model.links_all_resolve(fps, plinks),
-                            lem_elinks(x, ids, Model.EmittedPage{peid, plinks, phtml},
-                              fpps, fps, ip, eve,
-                              ep_tr(ids, x, ep, Model.EmittedPage{peid, plinks, phtml}, epeq, ev1)),
+                            lem_elinks(x, Model.EmittedPage{peid, plinks, phtml},
+                              fpps, fps, eve,
+                              ep_tr(fpps, x, ep, Model.EmittedPage{peid, plinks, phtml}, epeq, ev1)),
                             par_tl_tr(fps, Nil{}, ptl, rteq, {==}))
                 case +r2 <> +rt2:
                   %evrest : snc_par_disc(fps, ps, _)
@@ -781,35 +781,32 @@ def lem_ea(+fpps: List<&2, C.PagePrep>, +ids: List<&2, String>, +fps: List<&2, M
                       +rteq = cons_tl_eq(ep, rest,
                         Model.EmittedPage{peid, plinks, phtml}, ptl, e1)
                       par_cons(fps, ptl, Model.links_all_resolve(fps, plinks),
-                        lem_elinks(x, ids, Model.EmittedPage{peid, plinks, phtml},
-                          fpps, fps, ip, eve,
-                          ep_tr(ids, x, ep, Model.EmittedPage{peid, plinks, phtml}, epeq, ev1)),
+                        lem_elinks(x, Model.EmittedPage{peid, plinks, phtml},
+                          fpps, fps, eve,
+                          ep_tr(fpps, x, ep, Model.EmittedPage{peid, plinks, phtml}, epeq, ev1)),
                         par_tl_tr(fps, rest, ptl, rteq,
-                          lem_ea(fpps, ids, fps, ip, eve, xt2, x2,
-                            C.emit_one(ids, x2), C.emit_all(ids, xt2), rest,
+                          lem_ea(fpps, fps, eve, xt2, x2,
+                            C.emit_one(fpps, x2), C.emit_all(fpps, xt2), rest,
                             evrest, {==}, {==})))
 
-def lem_emit_all(+fpps: List<&2, C.PagePrep>, +ids: List<&2, String>, +fps: List<&2, Model.EmittedPage>,
-  +ip: {ids == C.prep_ids(fpps) : List<&2, String>},
-  +eve: {C.emit_all(ids, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
-  xs: List<&2, C.PagePrep>, +ps: List<&2, Model.EmittedPage>,
-  +e1: {C.emit_all(ids, xs) == Some{ps} : Maybe<&2, List<&2, Model.EmittedPage>>}) ->
+def lem_emit_all(+fpps: List<&2, Graph.GraphNode>, +fps: List<&2, Model.EmittedPage>,
+  +eve: {C.emit_all(fpps, fpps) == Some{fps} : Maybe<&2, List<&2, Model.EmittedPage>>},
+  xs: List<&2, Graph.GraphNode>, +ps: List<&2, Model.EmittedPage>,
+  +e1: {C.emit_all(fpps, xs) == Some{ps} : Maybe<&2, List<&2, Model.EmittedPage>>}) ->
   {Model.pages_all_resolve(ps, fps) == True{} : Bool}:
   match xs:
     case Nil{}:
       %e1 : {Model.pages_all_resolve(uneps(Nil{}, _), fps) == True{} : Bool}
       {==}
     case +x <> +xt:
-      lem_ea(fpps, ids, fps, ip, eve, xt, x, C.emit_one(ids, x), C.emit_all(ids, xt), ps,
+      lem_ea(fpps, fps, eve, xt, x, C.emit_one(fpps, x), C.emit_all(fpps, xt), ps,
         e1, {==}, {==})
 
 # --- gate elimination -----------------------------------------------------------
 
-def li_gate(+pps: List<&2, C.PagePrep>,
-  v: Maybe<&2, Graph.ValidatedGraph>, e: Maybe<&2, List<&2, Model.EmittedPage>>,
+def li_gate(v: Maybe<&2, Graph.ValidatedGraph>, e: Maybe<&2, List<&2, Model.EmittedPage>>,
   +pub: Model.Publication,
-  +evv: {Graph.validate(C.nodes_go(pps)) == v : Maybe<&2, Graph.ValidatedGraph>},
-  +eve: {C.emit_all(C.prep_ids(pps), pps) == e : Maybe<&2, List<&2, Model.EmittedPage>>},
+  +eve: {C.emit_validated(v) == e : Maybe<&2, List<&2, Model.EmittedPage>>},
   +ev: {C.compile_gate(v, e) == Some{pub} : Maybe<&2, Model.Publication>}) ->
   {Model.publication_links_resolve(pub) == True{} : Bool}:
   match v:
@@ -817,26 +814,27 @@ def li_gate(+pps: List<&2, C.PagePrep>,
       %ev : mpub_par(pub, _)
       Unit{}
     case Some{+g}:
-      match e:
-        case None{}:
-          %ev : mpub_par(pub, _)
-          Unit{}
-        case Some{+ps}:
-          %ev : {Model.publication_links_resolve(unpub_m(pub, _)) == True{} : Bool}
-          lem_emit_all(pps, C.prep_ids(pps), ps, {==}, eve, pps, ps, eve)
+      match g:
+        case Graph.ValidatedGraph{+nodes}:
+          match e:
+            case None{}:
+              %ev : mpub_par(pub, _)
+              Unit{}
+            case Some{+ps}:
+              %ev : {Model.publication_links_resolve(unpub_m(pub, _)) == True{} : Bool}
+              lem_emit_all(nodes, ps, eve, nodes, ps, eve)
 
 def li_step(+config: Model.Config, +pages: List<&2, Model.SourcePage>,
-  prepped: Maybe<&2, List<&2, C.PagePrep>>, +pub: Model.Publication,
-  +evp: {C.prep_all(pages) == prepped : Maybe<&2, List<&2, C.PagePrep>>},
+  prepped: Maybe<&2, List<&2, Graph.RawNode>>, +pub: Model.Publication,
+  +evp: {C.prep_all(pages) == prepped : Maybe<&2, List<&2, Graph.RawNode>>},
   +ev: {C.compile_step(prepped) == Some{pub} : Maybe<&2, Model.Publication>}) ->
   {Model.publication_links_resolve(pub) == True{} : Bool}:
   match prepped:
     case None{}:
       %ev : mpub_par(pub, _)
       Unit{}
-    case Some{+pps}:
-      li_gate(pps, Graph.validate(C.nodes_go(pps)), C.emit_all(C.prep_ids(pps), pps), pub,
-        {==}, {==}, ev)
+    case Some{+nodes}:
+      li_gate(Graph.validate(nodes), C.emit_validated(Graph.validate(nodes)), pub, {==}, ev)
 
 def Laws.link_integrity(config, pages, pub, ev):
   li_step(config, pages, C.prep_all(pages), pub, {==}, ev)
