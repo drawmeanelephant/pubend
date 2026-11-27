@@ -116,14 +116,19 @@ image syntax.
 
 ### 5.2 Resolution
 
-An internal page link written in page `F` with raw target `T` resolves as pure path algebra:
+An internal page link written in page `F` with engine-normalized AST target `T` resolves as pure path algebra:
 
-1. strip any `#fragment` suffix — **fragments are passed through unvalidated in v0** (heading existence is not
-   part of the theorem; see §8);
-2. if the target contains a query suffix `?...`, reject it as a content error; queries on static pages are
-   meaningless in v0;
-3. join `T` against the directory of `F`'s id;
-4. normalize dot segments (`.`, `..`) lexically, never touching the filesystem;
+1. split literal `#fragment` and `?query` delimiters before decoding — **fragments are passed through
+   unvalidated in v0** (heading existence is not part of the theorem; see §8), and a query suffix on an internal
+   page link is a content error;
+2. percent-decode the remaining path portion exactly once as UTF-8. `%` therefore introduces a required
+   two-hex-digit byte encoding in internal link paths; malformed percent sequences and percent-encoded bytes
+   that do not form valid UTF-8 are content errors. Authors must write `%25` for a literal percent sign in a
+   page-id path segment. Encoded delimiters such as `%23` and `%3F` decode into path text and are not treated
+   as fragment/query delimiters;
+3. join the decoded path against the directory of `F`'s id;
+4. normalize dot segments (`.`, `..`) lexically after decoding, never touching the filesystem; encoded dot
+   segments such as `%2E%2E` therefore have the same traversal meaning as literal `..`;
 5. escaping above the content root (`..` past the root) is a content error;
 6. the result must equal the id of an existing page plus `.md`.
 
@@ -214,7 +219,8 @@ duplicate ids, dangling parent, parent cycle, link escaping content root, link t
 input, invalid UTF-8, symlinked entries, non-`.md` files in content. Diagnostics always carry a stable class
 and, when available, content path/page id. Frontmatter diagnostics carry original-file line and column. Graph
 diagnostics carry the involved page ids but have no source span in v0. Link diagnostics carry source page and
-raw target and, when exposed by the engine, the engine-normalized markdown span offsets; those offsets are
+the engine-normalized AST target (not necessarily the author-written spelling) and, when exposed by the
+engine, the engine-normalized markdown span offsets; those offsets are
 best-available provenance, not guaranteed original-file line/column after reference stripping or newline
 normalization. Input-tree diagnostics have paths but no line/column. Nothing fails silently; nothing is
 best-effort.
