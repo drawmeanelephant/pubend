@@ -43,8 +43,10 @@ Consequence: during development, bendown must physically live inside pubend's tr
 - monorepo merge — abandons the engine as a separately consumable product, which contradicts the doctrine.
 
 Current dependency pin: `engine/` is the bendown git submodule at commit
-`41733d0c15f66b7bca400779a882c52ffa780ef0` (upstream `main` as of 2026-11-27). A scratch root file containing
-`import ./engine/src/ast.bend as Ast` typechecked with `ALL PROOFS CHECK` before the scratch file was removed.
+`49701b8b33ec40d404b159434c51f601161046b3`. Pubend deliberately uses bendown's public typed AST constructors
+plus `document_links.bend` to perform publication-owned link target rewriting before rendering. Upstream's later
+pure render-time rewrite hook (merged as bendown PR #10) remains optional; adopting it would be a separate pin
+and integration decision rather than a requirement for the current design.
 
 Release discipline, later: publish bendown to BendHub, pin pubend to `0x<hash>`. Not now — publishes are
 permanent and public, and both sides are moving.
@@ -83,9 +85,11 @@ gravity is the library, not the CLIs.
 
 ## Proof architecture
 
-Bend's module system has a property worth building the product identity on: importing a module re-checks its
-proofs. When pubend imports bendown, bendown's `PROOF.bend` obligations are not trusted — they are re-verified
-at pubend compile time. Proof-carrying code, literally.
+Bend proof obligations are compile-time checked only where they are actually imported and discharged. Pubend
+therefore does **not** claim that compiling `src/compile.bend` automatically re-verifies every separate
+`engine/PROOF.bend` obligation. The honest current meaning of proof-carrying is narrower: pubend's own
+`LAWS.bend` obligations are discharged in pubend's `PROOF.bend` and report `ALL PROOFS CHECK` under Bend's
+checker. BendTT/Lean kernel-level validity is explicitly not claimed unless `PROOF.bend --verdict` succeeds.
 
 Product pattern, inherited from bendown:
 
@@ -110,13 +114,13 @@ for fast-follow. Textile (46/107 Oliver fixture families) is explicitly deferred
 The smallest thing that is genuinely a publication compiler and not a demo:
 
 ```text
-pubend build DIR [--out DIR] [--seq]
+pubend build DIR [--out OUT]
 ```
 
 - input: `content/` tree of `.md` files with minimal frontmatter (`title`, optional `parent`, `status`)
 - graph: unique ids, parent forest validation, fail-loud spanned diagnostics
-- compile: parallel-by-construction batch over pages (sequential semantics; `--seq` exists to measure and to
-  verify the equivalence in practice)
+- compile: pure batch over pages with sequential semantics in v0; parallel/sequential implementations and their
+  byte-equivalence evidence are explicitly deferred
 - output: deterministic HTML tree — engine fragments inside one layout shell; internal links resolved and
   rewritten; broken internal links are impossible **by proof**, not by audit
 - artifacts: one thin per-build manifest (what was emitted, digests) — contingent facts only; invariants are
@@ -140,11 +144,8 @@ pubend build DIR [--out DIR] [--seq]
    (parent semantics, multi-root policy, nav derivation) is deliberately not frozen; the centrality is not
    negotiable. See [v0-spec.md](v0-spec.md) §4.
 
-Initial scaffold landed: [../src/model.bend](../src/model.bend) (core types + the executable meaning of link
-integrity, smoke-tested True/False on consistent/dangling publications), [../src/compile.bend](../src/compile.bend)
-(typed pure-pipeline stub), [../LAWS.bend](../LAWS.bend) (determinism pin + flagship link-integrity law),
-[../PROOF.bend](../PROOF.bend) (determinism discharged; `bend PROOF.bend` prints exactly one TODO — the open
-flagship law — which is the intended ratchet state).
+Current implementation state is maintained in [../README.md](../README.md) and [v0-spec.md](v0-spec.md); those
+documents supersede early scaffold notes here when they differ.
 
 ## Evidence base
 

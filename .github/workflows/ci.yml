@@ -64,3 +64,30 @@ jobs:
 
       - name: Verify corpus oracle and compile harness
         run: sh tools/verify_ci.sh corpus
+
+  verify-end-to-end:
+    name: verify-end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Cache Bend toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bend
+          key: bend-2.0.40-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install Bend 2.0.40 (pinned sha256)
+        run: sh engine/tools/install_bend_ci.sh
+
+      - name: Check Python and Node runtimes
+        run: |
+          python3 --version
+          node --version
+          node -e "const major=Number(process.versions.node.split('.')[0]); if (major < 18) process.exit(1)"
+
+      - name: Verify product CLI artifacts end-to-end
+        run: sh tools/verify_ci.sh end-to-end

@@ -32,6 +32,15 @@ sh tools/verify_ci.sh proofs
 sh tools/verify_ci.sh corpus
 ```
 
+`sh tools/verify_ci.sh all` additionally runs the end-to-end product CLI/artifact lane. That lane can also be
+run directly as:
+
+```sh
+sh tools/verify_ci.sh end-to-end
+```
+
+It copies corpus inputs into `/tmp` and never writes output trees into tracked corpus directories.
+
 Direct commands, when debugging one lane:
 
 ```sh
@@ -55,12 +64,11 @@ unless that command genuinely succeeds.
   verification pass. If the implementation is wrong, fix the implementation or report the mismatch honestly.
 - Do not add a regex markdown scanner to `src/`. Link extraction must come from bendown parse results.
 - Keep IO outside the pure compile pipeline. `src/compile.bend` is pure over pre-loaded `SourcePage` values.
-- Downstream publication work is supposed to consume `ValidatedGraph`; do not add new bypasses. The current
-  emission path is known to be weaker than the spec's strongest reading and must not be treated as finished.
+- Downstream publication work consumes `ValidatedGraph`; do not add new bypasses around validation.
 - Do not claim par/seq equivalence or performance until separate parallel and sequential implementations exist
   and produce byte-identical outputs.
-- Do not claim artifact-level broken-link freedom until rendered `.md` hrefs are rewritten to `.html` output
-  paths and the link-model/HTML correspondence is addressed.
+- Do not claim theorem-level rendered-HTML correspondence: the theorem covers the emitted link model, while
+  actual HTML target behavior is established end-to-end through implementation and artifact audit evidence.
 - Do not install or use Docker, VM runtimes, containers, or container emulators for verification.
 - Do not commit secrets or tokens. Do not weaken branch protection, CI, security settings, or supply-chain
   pinning to make a check pass.
@@ -84,6 +92,7 @@ unless that command genuinely succeeds.
 
 ## Current known gaps
 
-The honest current state is documented in [README.md](README.md). In particular, there is no product CLI, no
-written output tree, no layout/nav/manifest, no rendered `.md` to `.html` href rewriting, no user-facing spanned
-diagnostics, and no par/seq implementation. Treat those as open work, not as bugs in the verification commands.
+The honest current state is documented in [README.md](README.md). The major remaining gaps are par/seq
+implementations, Lean/BendTT `--verdict`, original-author-source markdown destination spans, upstream bendown
+JavaScript-backend input-size robustness (issue #11), physically colliding output path mappings, and adversarial
+concurrent-mutation immunity. Treat those as open work, not as bugs in the verification commands.
