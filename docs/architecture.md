@@ -75,6 +75,33 @@ permanent and public, and both sides are moving.
 - batch orchestration, CLI, machine-readable artifacts
 - its own LAWS/PROOF files covering car-side invariants
 
+### Host implementation boundary (current)
+
+The product host is native Bend. `./pubend` is only a portable shell bootstrapper: it resolves the checkout,
+verifies the pinned Bend 2.0.40 toolchain, selects a content-addressed binary under the gitignored
+`.pubend-cache/`, transparently builds `host/hostmain.bend` when that content hash has no cached binary, and
+then `exec`s the binary. The default product path uses shell/POSIX utilities at launch time, the Bend compiler
+only when the selected host binary is missing, and the native binary afterwards. It does not use Node.js, Bun,
+or another JavaScript runtime.
+
+`host/` is the filesystem-facing car shell. `hostmain.bend` orchestrates CLI parsing, canonical path
+resolution, input scanning, in-process `compile_report`, and publication. `HostFS.bend` isolates syscalls in
+custom foreign effects whose ABI is pinned to Bend 2.0.40; `host_eff.c` backs the native binary and
+`host_eff.js` remains paired with those declarations for non-product JavaScript/interpreter lanes. The pure
+compile pipeline in `src/` remains pure over pre-loaded `SourcePage` values. Foreign effects and host
+orchestration are outside the proof-imported dependency graph and must stay there.
+
+`tools/pubend.mjs` is demoted to a temporary reference oracle and migration harness. It is not a product
+scaffold and must not receive new product behavior except behavior-preserving oracle corrections. The
+differential host-parity lane is the migration evidence: positive corpus sites, physical negative fixtures, and
+CLI boundary probes run through both hosts at the same paths with fixtures reset between runs, comparing exit
+codes, stdout bytes, stderr bytes, and post-run filesystem trees exactly. When the project deliberately retires
+that oracle, removal must be a separate reviewed change rather than a hidden side effect of host work.
+
+This is not a claim of perfect operating-system isolation. The host still requires stable input/output trees,
+does not provide adversarial concurrent-mutation immunity, and has not exhaustively fault-injected every rare
+errno path. Those limits are explicit residuals, not hidden proof obligations.
+
 ### Migration pressure inside bendown
 
 `src/parallel/batch.bend` (pure combinators + proof) is engine library code — stays. `src/parallel/engine.bend`

@@ -91,3 +91,6 @@ jobs:
 
       - name: Verify product CLI artifacts end-to-end
         run: sh tools/verify_ci.sh end-to-end
+
+      - name: Compare native host with reference oracle
+        run: sh tools/verify_ci.sh host-parity

@@ -228,10 +228,14 @@ discover (IO) → read+parse batch (parallel pure map over pages)
 ### 7.1 CLI contract
 
 - Exit codes are exact: `0` success; `1` input-tree or content validation failure; `2` command-line/path usage
-  refusal; `3` host IO, environment, compiler-artifact, or output-publication failure.
-- Successful builds write nothing to stdout or stderr. Failures write one UTF-8 JSON object to stderr followed
-  by one newline: top-level keys `version`, `status`, then `diagnostics`, in that order. `version` is `1` and
-  `status` is `error`. Each diagnostic object uses the stable key order `class`, `path`, `page`, `line`,
+  refusal; `3` host IO, environment, host bootstrap/build, compiler-artifact, or output-publication failure.
+- Successful builds write nothing to stdout or stderr. Once the publication host has started, failures write
+  one UTF-8 JSON object to stderr followed by one newline: top-level keys `version`, `status`, then
+  `diagnostics`, in that order. `version` is `1` and
+  `status` is `error`. Launcher bootstrap failures before a host binary exists — for example a missing pinned
+  Bend toolchain or a failed native host build — cannot satisfy this JSON envelope and instead fail loudly in
+  plain stderr with exit 3. For structured host failures, each diagnostic object uses the stable key order
+  `class`, `path`, `page`, `line`,
   `column`, `target`, `span`, `message`; unavailable scalar fields are `null` rather than omitted. `span`, when
   present, is an object with `start` and `end` engine-normalized UTF-8 offsets. Diagnostic classes align with
   the oracle taxonomy where the same condition exists.
@@ -257,9 +261,9 @@ discover (IO) → read+parse batch (parallel pure map over pages)
   marker without overwriting an existing entry. A crash in that window can leave an unmarked backup. Later
   builds refuse to restore or remove that backup. This conservative outcome is required: refusing recovery is
   acceptable, deleting or overwriting foreign data is not.
-- Input and output trees are required to be stable during a build. Portable Node cannot provide immunity to
-  adversarial concurrent mutation. Post-stage validation is a mitigation that can reject an already-corrupted
-  stage before publication; it is not a proof of race freedom.
+- Input and output trees are required to be stable during a build. A portable user-space host cannot provide
+  immunity to adversarial concurrent mutation. Post-stage validation is a mitigation that can reject an
+  already-corrupted stage before publication; it is not a proof of race freedom.
 
 ## 8. Explicit non-goals for v0
 

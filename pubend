@@ -32,7 +32,191 @@ while [ -L "$script" ]; do
   esac
 done
 
-dir=$(CDPATH='' cd -P "$(dirname "$script")" 2>/dev/null && pwd -P) || fail "cannot resolve executable directory: $script"
-cli=$dir/tools/pubend.mjs
-[ -f "$cli" ] || fail "cannot find CLI: $cli"
-exec node "$cli" "$@"
+repo=$(CDPATH='' cd -P "$(dirname "$script")" 2>/dev/null && pwd -P) || fail "cannot resolve executable directory: $script"
+[ -f "$repo/host/hostmain.bend" ] || fail "cannot find native host entrypoint: $repo/host/hostmain.bend"
+
+if [ -n "${BEND_BIN:-}" ]; then
+  bend_bin=$BEND_BIN
+elif [ -n "${HOME:-}" ]; then
+  bend_bin=$HOME/.bend/bin/bend
+else
+  fail "Bend 2.0.40 toolchain location is unknown because HOME is unset; install with: sh engine/tools/install_bend_ci.sh"
+fi
+
+if [ ! -x "$bend_bin" ]; then
+  fail "Bend 2.0.40 toolchain is missing or not executable at $bend_bin; install it with: sh engine/tools/install_bend_ci.sh (or set BEND_BIN to a pinned Bend 2.0.40 executable)"
+fi
+
+bend_version=$("$bend_bin" version 2>&1) || fail "could not execute Bend toolchain at $bend_bin; install Bend 2.0.40 with: sh engine/tools/install_bend_ci.sh"
+if [ "$bend_version" != "bend 2.0.40" ]; then
+  fail "unsupported Bend toolchain at $bend_bin (expected exactly 'bend 2.0.40', got '$bend_version'); install it with: sh engine/tools/install_bend_ci.sh"
+fi
+
+cache_dir=$repo/.pubend-cache
+mkdir -p "$cache_dir" 2>/dev/null || fail "cannot create native host cache directory: $cache_dir"
+
+hash_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256
+  else
+    return 127
+  fi
+}
+
+print_input_files() {
+  for file in host/*.bend host/host_eff.c host/host_eff.js src/*.bend; do
+    [ -f "$file" ] || exit 3
+    printf '%s\n' "$file"
+  done
+  find engine/src -type f -name '*.bend' -print | sort
+}
+
+host_input_hash() {
+  (
+    cd "$repo" || exit 3
+    {
+      printf '%s\n' 'format=pubend-host-cache-v1'
+      printf 'os=%s\n' "$(uname -s 2>/dev/null || printf '%s' unknown)"
+      printf 'arch=%s\n' "$(uname -m 2>/dev/null || printf '%s' unknown)"
+      printf 'bend-version=%s\n' "$bend_version"
+      print_input_files | while IFS= read -r file; do
+        byte_count=$(wc -c < "$file") || exit 3
+        printf 'file=%s bytes=%s\n' "$file" "$byte_count"
+        cat "$file" || exit 3
+        printf '\nend-file=%s\n' "$file"
+      done
+    } | hash_stream
+  )
+}
+
+if ! hash_output=$(host_input_hash); then
+  fail "cannot hash native host inputs; install a SHA-256 utility (sha256sum or shasum) and check that host/, src/, and engine/src are readable"
+fi
+first_output_word() {
+  set -- $1
+  printf '%s' "${1:-}"
+}
+
+host_hash=$(first_output_word "$hash_output")
+if [ "${#host_hash}" -ne 64 ]; then
+  fail "cannot parse native host input hash from SHA-256 utility output: $hash_output"
+fi
+case $host_hash in
+  *[!0-9a-f]*)
+    fail "native host input hash is not lowercase hexadecimal: $host_hash"
+    ;;
+esac
+
+target=$cache_dir/pubend-host-$host_hash
+lock=$cache_dir/pubend-host-$host_hash.lock
+build_tmp=
+build_log=
+lock_owned=0
+
+cache_target_exists() {
+  [ -e "$target" ] || [ -L "$target" ]
+}
+
+cache_target_ready() {
+  [ -f "$target" ] && [ -x "$target" ] && [ ! -L "$target" ]
+}
+
+validate_cache_target() {
+  if ! cache_target_ready; then
+    fail "cached native host binary is corrupt or not executable: $target; remove $cache_dir and retry"
+  fi
+}
+
+cleanup_build() {
+  if [ "$lock_owned" = 1 ]; then
+    if [ -n "$build_tmp" ]; then
+      rm -f "$build_tmp" 2>/dev/null || true
+    fi
+    if [ -n "$build_log" ]; then
+      rm -f "$build_log" 2>/dev/null || true
+    fi
+    rm -f "$lock/pid" 2>/dev/null || true
+    rmdir "$lock" 2>/dev/null || true
+  fi
+}
+trap cleanup_build 0
+
+build_abort() {
+  printf '%s\n' "pubend: $1" >&2
+  if [ -n "$build_log" ] && [ -f "$build_log" ]; then
+    printf '%s\n' "pubend: compiler output follows" >&2
+    cat "$build_log" >&2 || true
+  fi
+  exit 3
+}
+
+build_native_host() {
+  build_tmp=$cache_dir/.building-$host_hash.$$
+  build_log=$cache_dir/.building-$host_hash.$$.log
+  rm -f "$build_tmp" "$build_log" 2>/dev/null || true
+
+  if (cd "$repo" && BEND_NO_TELEMETRY=1 "$bend_bin" host/hostmain.bend -o "$build_tmp") >"$build_log" 2>&1; then
+    [ -f "$build_tmp" ] || build_abort "Bend completed but did not write the native host binary: $build_tmp"
+    [ -x "$build_tmp" ] || build_abort "Bend wrote a non-executable native host binary: $build_tmp"
+    if cache_target_exists; then
+      rm -f "$build_tmp" 2>/dev/null || true
+    else
+      mv "$build_tmp" "$target" 2>/dev/null || build_abort "cannot install native host binary into cache: $target"
+    fi
+    rm -f "$build_log" 2>/dev/null || true
+    build_tmp=
+    build_log=
+  else
+    build_abort "native host build failed with pinned Bend 2.0.40; command: $bend_bin host/hostmain.bend -o $build_tmp"
+  fi
+}
+
+wait_for_build_lock() {
+  waited=0
+  while [ -d "$lock" ] && ! cache_target_exists; do
+    lock_pid=$(cat "$lock/pid" 2>/dev/null || true)
+    if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+      rm -f "$lock/pid" 2>/dev/null || true
+      rmdir "$lock" 2>/dev/null || true
+      [ ! -d "$lock" ] || fail "could not remove dead native host build lock: $lock"
+      return 0
+    fi
+    if [ -z "$lock_pid" ] && [ "$waited" -ge 5 ]; then
+      rmdir "$lock" 2>/dev/null || true
+      [ ! -d "$lock" ] || fail "could not remove malformed native host build lock: $lock"
+      return 0
+    fi
+    if [ "$waited" -ge 240 ]; then
+      fail "timed out waiting for native host build lock owned by pid ${lock_pid:-unknown}: $lock"
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+if cache_target_exists; then
+  validate_cache_target
+else
+  attempts=0
+  while ! cache_target_exists; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -le 3 ] || fail "native host build did not produce a cached binary after $attempts attempts: $target"
+    if mkdir "$lock" 2>/dev/null; then
+      lock_owned=1
+      printf '%s\n' $$ >"$lock/pid" || build_abort "cannot write native host build lock pid: $lock/pid"
+      build_native_host
+      rm -f "$lock/pid" 2>/dev/null || true
+      if ! rmdir "$lock" 2>/dev/null; then
+        fail "cannot release native host build lock: $lock"
+      fi
+      lock_owned=0
+    else
+      wait_for_build_lock
+    fi
+  done
+  validate_cache_target
+fi
+
+exec "$target" "$@"

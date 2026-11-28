@@ -83,7 +83,7 @@ def cli_bytes_none() -> Maybe<&2, List<&2, U32>>:
   None{}
 
 def usage_suffix() -> String:
-  "; usage: node tools/pubend.mjs build DIR [--out OUT]"
+  "; usage: ./pubend build DIR [--out OUT]"
 
 def cli_usage_failure(+message: String) -> HC.HostFailure:
   HC.host_failure_one(2, HC.host_diag_simple(HC.DUsageError{}, message ++ usage_suffix()))
