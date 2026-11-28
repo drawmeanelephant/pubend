@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 
-// pubend v0 product CLI host shell.
+// pubend v0 reference oracle and migration harness.
 //
-// Interface:
-//   node tools/pubend.mjs build DIR [--out OUT]
+// This JavaScript host is no longer the product path. The product path is
+// ./pubend, which builds and executes the native Bend host from
+// host/hostmain.bend. This implementation remains temporarily as the
+// reference oracle for the differential migration harness in
+// tools/verify_host_parity.py; do not add production features here.
+//
+// Emulated product interface:
+//   ./pubend build DIR [--out OUT]
 //
 // Output-path rule: the default output is DIR/dist. A relative --out resolves
 // against DIR; an absolute --out is accepted only when its canonical form
@@ -49,7 +55,7 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 const MAX_PAGE_BYTES = 1024 * 1024;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
-const USAGE = 'usage: node tools/pubend.mjs build DIR [--out OUT]';
+const USAGE = 'usage: ./pubend build DIR [--out OUT]';
 const PUBLICATION_SUFFIXES = Object.freeze([
   '.pubend-lock',
   '.pubend-stage',

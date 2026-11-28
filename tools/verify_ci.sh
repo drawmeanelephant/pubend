@@ -51,11 +51,16 @@ end_to_end() {
   cli_boundary
 }
 
+host_parity() {
+  python3 tools/verify_host_parity.py
+}
+
 case "$MODE" in
   proofs) proofs ;;
   corpus) corpus ;;
   end-to-end) end_to_end ;;
   cli-boundary) cli_boundary ;;
-  all) proofs; corpus; end_to_end ;;
-  *) echo "usage: sh tools/verify_ci.sh [proofs|corpus|end-to-end|cli-boundary|all]" >&2; exit 2 ;;
+  host-parity) host_parity ;;
+  all) proofs; corpus; end_to_end; host_parity ;;
+  *) echo "usage: sh tools/verify_ci.sh [proofs|corpus|end-to-end|cli-boundary|host-parity|all]" >&2; exit 2 ;;
 esac

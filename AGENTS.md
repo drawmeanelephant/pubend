@@ -32,16 +32,20 @@ sh tools/verify_ci.sh proofs
 sh tools/verify_ci.sh corpus
 ```
 
-`sh tools/verify_ci.sh all` additionally runs the end-to-end product CLI/artifact lane. That lane can also be
-run directly as:
+`sh tools/verify_ci.sh all` additionally runs the end-to-end product CLI/artifact lane and the native/oracle
+host-parity lane. Those lanes can also be run directly as:
 
 ```sh
 sh tools/verify_ci.sh end-to-end
 sh tools/verify_ci.sh cli-boundary
+sh tools/verify_ci.sh host-parity
 ```
 
-The end-to-end lane includes the CLI boundary probes. Both lanes copy or create inputs only under `/tmp` and
-never write output trees into tracked corpus directories.
+The end-to-end lane includes the CLI boundary probes. The host-parity lane runs positive corpus sites, physical
+negative fixtures, and boundary probes through the native product host and the temporary JavaScript reference
+oracle at the same paths, resetting fixtures between hosts and requiring exact exit/stdout/stderr bytes plus
+exact post-run trees. These lanes copy or create inputs only under `/tmp` and never write output trees into
+tracked corpus directories.
 
 Direct commands, when debugging one lane:
 
@@ -54,6 +58,7 @@ BEND_NO_TELEMETRY=1 ~/.bend/bin/bend test/links_smoke.bend
 BEND_NO_TELEMETRY=1 ~/.bend/bin/bend test/compile_smoke.bend
 PYTHONDONTWRITEBYTECODE=1 python3 tools/check_corpus.py --self-test corpus-negative
 node tools/compile_corpus.mjs all corpus corpus-negative --rebuild
+PYTHONDONTWRITEBYTECODE=1 python3 tools/verify_host_parity.py
 ```
 
 `LAWS.bend` intentionally reports open `law` declarations when checked standalone; they are discharged in
@@ -66,6 +71,9 @@ unless that command genuinely succeeds.
   verification pass. If the implementation is wrong, fix the implementation or report the mismatch honestly.
 - Do not add a regex markdown scanner to `src/`. Link extraction must come from bendown parse results.
 - Keep IO outside the pure compile pipeline. `src/compile.bend` is pure over pre-loaded `SourcePage` values.
+- The default `./pubend` product path is the cached native Bend host binary built from `host/hostmain.bend`. It
+  must never invoke Node.js, Bun, or another JavaScript runtime. `tools/pubend.mjs` is a temporary reference
+  oracle/migration harness only; do not add production features or new production callers to it.
 - Downstream publication work consumes `ValidatedGraph`; do not add new bypasses around validation.
 - Do not claim par/seq equivalence or performance until separate parallel and sequential implementations exist
   and produce byte-identical outputs.
@@ -96,5 +104,7 @@ unless that command genuinely succeeds.
 
 The honest current state is documented in [README.md](README.md). The major remaining gaps are par/seq
 implementations, Lean/BendTT `--verdict`, original-author-source markdown destination spans, upstream bendown
-JavaScript-backend input-size robustness (issue #11), physically colliding output path mappings, and adversarial
-concurrent-mutation immunity. Treat those as open work, not as bugs in the verification commands.
+JavaScript-backend input-size robustness (issue #11, now confined to oracle/comparison harnesses rather than the
+product host), deep container nesting costs in shared markup algorithms, physically colliding output path
+mappings, adversarial concurrent-mutation immunity, and non-exhaustive fault-injection coverage of rare errno
+paths. Treat those as open work, not as bugs in the verification commands.
