@@ -37,9 +37,11 @@ run directly as:
 
 ```sh
 sh tools/verify_ci.sh end-to-end
+sh tools/verify_ci.sh cli-boundary
 ```
 
-It copies corpus inputs into `/tmp` and never writes output trees into tracked corpus directories.
+The end-to-end lane includes the CLI boundary probes. Both lanes copy or create inputs only under `/tmp` and
+never write output trees into tracked corpus directories.
 
 Direct commands, when debugging one lane:
 

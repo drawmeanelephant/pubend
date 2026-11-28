@@ -63,6 +63,7 @@ Or run individual lanes separately:
 sh tools/verify_ci.sh proofs
 sh tools/verify_ci.sh corpus
 sh tools/verify_ci.sh end-to-end
+sh tools/verify_ci.sh cli-boundary
 ```
 
 The proof lane checks `PROOF.bend` and all Bend smoke suites. The corpus lane checks the positive corpus, the
@@ -71,15 +72,22 @@ into `/tmp`, builds them twice through the product `./pubend` CLI, audits output
 manifest order with `tools/check_output.py`, and compares repeated output trees by complete entry path/kind
 shape (including empty directories) plus exact regular-file bytes. Manifest order evidence is a strict JSON
 array of strings; the auditor's legacy newline-delimited order format remains supported but cannot represent an
-id containing U+000A. Physical negative-fixture diagnostic classes are compared as oracle-derived multisets,
+id containing U+000A. Contract evidence includes exact duplicate-target multiplicity, valid percent-encoded
+non-ASCII input links, canonical BMP/astral Unicode href encoding, and BMP-versus-astral filename ordering.
+Physical negative-fixture diagnostic classes are compared as oracle-derived multisets,
 with exact multiplicity for malformed-percent (three diagnostics) and the other applicable fixtures. The one
 documented exact-multiplicity skip is `malformed-frontmatter`: its unterminated trailing-newline boundary is
 outside the Python oracle's exact multiplicity approximation, so only class-set evidence is claimed there. The
 lane also probes newline-id order round-tripping, generated-nav scoping/whitespace behavior, absence of failed-
-build publication siblings, and preservation of a previously published tree after a failed rebuild.
-Synthetic-injection fixtures and `EXPECTED=valid` boundary controls are reported by the lane but are not
-negative evidence. `LAWS.bend` intentionally reports open law declarations when checked standalone; those
-obligations are discharged in `PROOF.bend`.
+build publication siblings, and preservation of a previously published tree after a failed rebuild. Its CLI
+boundary regression probes cover case-alias/content overwrite refusal, reserved publication names, canonical
+symlink containment, exact foreign lock/stage/backup tree preservation, owned-lock release after handled
+failures, marker-owned recovery, symlinked output refusal, and ordinary/fixed-host-file output-path collisions
+including filesystem-dependent ASCII-case aliases. They also cover repeated-build determinism and
+relative/absolute symlinked wrapper resolution. Those probes can also be run
+directly as `sh tools/verify_ci.sh cli-boundary`. Synthetic-injection fixtures and `EXPECTED=valid`
+boundary controls are reported by the lane but are not negative evidence. `LAWS.bend` intentionally reports
+open law declarations when checked standalone; those obligations are discharged in `PROOF.bend`.
 
 `bend PROOF.bend --verdict` requires Lean v4.34.0 or `$BENDTT` pointing at a built BendTT kernel. The current CI
 uses Bend's own `ALL PROOFS CHECK` result, not the Lean-kernel verdict.

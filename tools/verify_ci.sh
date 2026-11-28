@@ -42,14 +42,20 @@ corpus() {
   node tools/compile_corpus.mjs all corpus corpus-negative --rebuild
 }
 
+cli_boundary() {
+  python3 tools/verify_cli_boundary.py
+}
+
 end_to_end() {
   python3 tools/verify_end_to_end.py
+  cli_boundary
 }
 
 case "$MODE" in
   proofs) proofs ;;
   corpus) corpus ;;
   end-to-end) end_to_end ;;
+  cli-boundary) cli_boundary ;;
   all) proofs; corpus; end_to_end ;;
-  *) echo "usage: sh tools/verify_ci.sh [proofs|corpus|end-to-end|all]" >&2; exit 2 ;;
+  *) echo "usage: sh tools/verify_ci.sh [proofs|corpus|end-to-end|cli-boundary|all]" >&2; exit 2 ;;
 esac
