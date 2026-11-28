@@ -490,6 +490,7 @@ HREF_OUTPUT_EXPECTED_TARGETS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("a", "href", "/deep/page.md"),
         ("a", "href", "space%20page.html"),
         ("a", "href", "caf%C3%A9.html"),
+        ("a", "href", "caf%C3%A9.html"),
         ("a", "href", "100%25.html"),
     ),
     "space page.html": (),
@@ -633,9 +634,22 @@ def validate_order_manifest(tree: Path) -> tuple[dict[str, Any], list[str]]:
     else:
         errors.extend(require_byte_snippets(empty_output, [b'<a href=".html">self</a>']))
 
+    index_output = tree / "index.html"
+    if not index_output.is_file():
+        errors.append("index.html output is missing for Unicode href validation")
+    else:
+        errors.extend(require_byte_snippets(index_output, [
+            'href="%EF%BD%8F.html"'.encode("ascii"),
+            'href="%F0%9F%98%80.html"'.encode("ascii"),
+        ]))
+
     try:
         manifest = json.loads((tree / "_pubend" / "manifest.json").read_text(encoding="utf-8"))
-        first_id = manifest.get("pages", [{}])[0].get("id")
+        pages = manifest.get("pages", [])
+        details["manifest_page_ids"] = [
+            page.get("id") for page in pages if isinstance(page, dict)
+        ]
+        first_id = pages[0].get("id") if pages else None
         details["manifest_first_id"] = first_id
         if first_id != "":
             errors.append(f"empty id is not first in manifest order: first id is {first_id!r}")
