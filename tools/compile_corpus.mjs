@@ -7,12 +7,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { TextDecoder } from 'node:util';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 const DEFAULT_ARTIFACT = '/tmp/pubend-compile.mjs';
 const MAX_PAGE_BYTES = 1024 * 1024;
 const PAR_SEQ = 'not-implemented';
+const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
+const INPUT_TREE_ERROR_CLASSES = new Set([
+  'missing-content-dir',
+  'non-md-file',
+  'oversized-page',
+  'invalid-utf8',
+  'symlinked-entry',
+]);
 
 const USAGE = `Usage:
   node tools/compile_corpus.mjs build
@@ -37,12 +46,14 @@ Input-tree behavior:
   EXPECTED, and FIXTURE.synthetic.json do not contaminate inputs.
   Scanning is deterministic and oracle-compatible: in each directory, sorted
   file names are processed first, then sorted child directories are descended.
-  Names are ordered by Unicode code point. Directory symlinks are never
-  descended. Symlinks to regular files are read as files, matching the Python
-  oracle; broken, special, or otherwise non-regular entries are input-tree
-  errors. Regular .md files become SourcePage ids by removing the final .md.
-  Non-.md file entries under content/ are input-tree errors. Pages larger
-  than 1 MiB are input-tree errors and are not read into the compile input.
+  Names are ordered by Unicode code point. Every symlinked entry under
+  content/ is an input-tree error and is never followed, including symlinks
+  naming files, symlinks naming directories, and dangling symlinks. Regular
+  .md files become SourcePage ids by removing the final .md. Non-.md file
+  entries under content/ are input-tree errors. Pages larger than 1 MiB are
+  input-tree errors and are not read into the compile input. Page bytes must
+  decode as UTF-8; invalid bytes are invalid-utf8 input-tree errors rather
+  than lossy replacement text.
 
 Output:
   Run modes print newline-delimited JSON objects with stable key order.
@@ -62,10 +73,12 @@ Commands:
             __pycache__ files in the repository), and report verdict agreement
             per positive site.
   negative  Run every fixture under NEGATIVE_DIR (default corpus-negative)
-            that has an EXPECTED file. Compare only coarse valid/invalid
-            verdicts with direct physical-tree oracle runs. Exact diagnostic
-            classes cannot be recovered from compile's None. Fixtures with
-            FIXTURE.synthetic.json are marked skipped-synthetic-injection:
+            that has an EXPECTED file. Compare coarse valid/invalid verdicts
+            with direct physical-tree oracle runs. Exact diagnostic classes
+            cannot be recovered from compile's None, but for fixtures whose
+            EXPECTED names only input-tree classes, scanner-visible classes are
+            also compared exactly. Fixtures
+            with FIXTURE.synthetic.json are marked skipped-synthetic-injection:
             their physical trees are valid and their injected duplicates are
             oracle-self-test-only.
   all       Run corpus mode followed by negative mode.
@@ -183,7 +196,7 @@ async function scanSite(siteRoot) {
   const contentDir = path.join(root, 'content');
   const pages = [];
   const errors = [];
-  const directorySymlinks = [];
+  const symlinkedEntries = [];
 
   let contentStat = null;
   try {
@@ -193,33 +206,30 @@ async function scanSite(siteRoot) {
   }
   if (!contentStat || !contentStat.isDirectory()) {
     errors.push(inputError('missing-content-dir', displayPath(root), 'site root has no content/ directory'));
-    return { root, contentDir, inputValid: false, errors, pages, directorySymlinks };
+    return { root, contentDir, inputValid: false, errors, pages, symlinkedEntries };
   }
 
-  async function classifyEntry(full, dirent) {
-    if (!dirent.isSymbolicLink()) {
-      if (dirent.isDirectory()) return 'directory';
-      return 'file-entry';
-    }
-    try {
-      const target = await fsp.stat(full);
-      if (target.isDirectory()) return 'directory-symlink';
-      return 'file-entry';
-    } catch {
-      return 'file-entry';
-    }
+  function classifyEntry(dirent) {
+    if (dirent.isSymbolicLink()) return 'symlink';
+    if (dirent.isDirectory()) return 'directory';
+    return 'file-entry';
   }
 
   async function processFileEntry(full, rel) {
+    let st = null;
+    try {
+      st = await fsp.lstat(full);
+    } catch {
+      st = null;
+    }
+    if (st && st.isSymbolicLink()) {
+      symlinkedEntries.push(rel);
+      errors.push(inputError('symlinked-entry', rel, 'symlinked entry under content/ is an input-tree error'));
+      return;
+    }
     if (!rel.endsWith('.md')) {
       errors.push(inputError('non-md-file', rel, 'file entry under content/ does not end in .md'));
       return;
-    }
-    let st = null;
-    try {
-      st = await fsp.stat(full);
-    } catch {
-      st = null;
     }
     if (!st || !st.isFile()) {
       errors.push(inputError('non-md-file', rel, '.md-named entry is not a regular file'));
@@ -229,12 +239,21 @@ async function scanSite(siteRoot) {
       errors.push(inputError('oversized-page', rel, `${st.size} bytes exceeds 1 MiB ceiling`));
       return;
     }
+    let raw;
     try {
-      const body = await fsp.readFile(full, 'utf8');
-      pages.push({ id: rel.slice(0, -3), path: rel, bytes: st.size, body });
+      raw = await fsp.readFile(full);
     } catch (error) {
       errors.push(inputError('unreadable-file', rel, String(error.message || error)));
+      return;
     }
+    let body;
+    try {
+      body = UTF8_DECODER.decode(raw);
+    } catch {
+      errors.push(inputError('invalid-utf8', rel, 'page bytes are not valid UTF-8'));
+      return;
+    }
+    pages.push({ id: rel.slice(0, -3), path: rel, bytes: st.size, body });
   }
 
   async function walk(dirFs, relDir) {
@@ -253,11 +272,12 @@ async function scanSite(siteRoot) {
 
     for (const name of names) {
       const dirent = byName.get(name);
-      const full = path.join(dirFs, name);
-      const kind = await classifyEntry(full, dirent);
+      const kind = classifyEntry(dirent);
       if (kind === 'directory') dirNames.push(name);
-      else if (kind === 'directory-symlink') {
-        directorySymlinks.push(relDir ? `${relDir}/${name}` : name);
+      else if (kind === 'symlink') {
+        const rel = relDir ? `${relDir}/${name}` : name;
+        symlinkedEntries.push(rel);
+        errors.push(inputError('symlinked-entry', rel, 'symlinked entry under content/ is an input-tree error'));
       } else fileNames.push(name);
     }
 
@@ -272,11 +292,15 @@ async function scanSite(siteRoot) {
   }
 
   await walk(contentDir, '');
-  return { root, contentDir, inputValid: errors.length === 0, errors, pages, directorySymlinks };
+  return { root, contentDir, inputValid: errors.length === 0, errors, pages, symlinkedEntries };
 }
 
 function inputErrorClasses(scan) {
   return uniqueSorted(scan.errors.map((e) => e.class));
+}
+
+function sameClassList(a, b) {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 function scanSummary(siteRoot, scan) {
@@ -288,7 +312,7 @@ function scanSummary(siteRoot, scan) {
     input_errors: scan.errors,
     page_count: scan.pages.length,
     page_ids: scan.pages.map((p) => p.id),
-    directory_symlinks_ignored: scan.directorySymlinks,
+    symlinked_entries: scan.symlinkedEntries,
     par_seq: PAR_SEQ,
   };
 }
@@ -344,7 +368,7 @@ async function compileSite(siteRoot, compile) {
     emitted_page_count: null,
     link_count: null,
     compile_ms: null,
-    directory_symlink_count: scan.directorySymlinks.length,
+    symlinked_entry_count: scan.symlinkedEntries.length,
     par_seq: PAR_SEQ,
   };
   if (!scan.inputValid) {
@@ -548,6 +572,9 @@ async function runNegative(negativeDir, compile) {
   let disagreements = 0;
   let syntheticSkipped = 0;
   let oracleExpectedMismatches = 0;
+  let inputClassComparisons = 0;
+  let inputClassAgreements = 0;
+  let inputClassDisagreements = 0;
 
   for (const fixture of fixtures) {
     const expectedClasses = readExpectedClasses(fixture);
@@ -558,6 +585,10 @@ async function runNegative(negativeDir, compile) {
     const oracleCoarse = oracle.valid ? 'valid' : 'invalid';
     const physicalAgreement = harness.valid === oracle.valid;
     const oracleExpectedAgreement = oracleCoarse === expectedCoarse;
+    const expectedOnlyInputTree = expectedClasses.every((cls) => INPUT_TREE_ERROR_CLASSES.has(cls));
+    const inputClassAgreement = !synthetic && expectedOnlyInputTree
+      ? sameClassList(harness.input_error_classes, expectedClasses)
+      : null;
 
     let comparison = 'compared-physical-oracle';
     let verdictAgreement = physicalAgreement;
@@ -570,6 +601,11 @@ async function runNegative(negativeDir, compile) {
       if (physicalAgreement) agreements += 1;
       else disagreements += 1;
       if (!oracleExpectedAgreement) oracleExpectedMismatches += 1;
+      if (inputClassAgreement !== null) {
+        inputClassComparisons += 1;
+        if (inputClassAgreement) inputClassAgreements += 1;
+        else inputClassDisagreements += 1;
+      }
     }
 
     jsonLine({
@@ -585,6 +621,7 @@ async function runNegative(negativeDir, compile) {
       physical_verdict_agreement: physicalAgreement,
       verdict_agreement: verdictAgreement,
       oracle_expected_agreement: oracleExpectedAgreement,
+      input_class_agreement: inputClassAgreement,
       note: synthetic
         ? 'FIXTURE.synthetic.json is consumed only by oracle self-test injection; this physical-tree run cannot express the duplicate-id fixture.'
         : null,
@@ -601,11 +638,17 @@ async function runNegative(negativeDir, compile) {
     verdict_agreements: agreements,
     verdict_disagreements: disagreements,
     oracle_expected_mismatches_nonsynthetic: oracleExpectedMismatches,
-    comparison_level: 'coarse-valid-invalid-only',
+    input_class_comparisons: inputClassComparisons,
+    input_class_agreements: inputClassAgreements,
+    input_class_disagreements: inputClassDisagreements,
+    comparison_level: 'coarse-valid-invalid-plus-exact-input-tree-classes-when-scanner-visible',
     par_seq: PAR_SEQ,
   };
   jsonLine(summary);
-  return { ok: disagreements === 0 && oracleExpectedMismatches === 0, summary };
+  return {
+    ok: disagreements === 0 && oracleExpectedMismatches === 0 && inputClassDisagreements === 0,
+    summary,
+  };
 }
 
 async function prepareCompile(rebuild) {

@@ -1,5 +1,7 @@
 import Base
 import ./model.bend as Model
+import ./frontmatter.bend as Fm
+import ../engine/src/ast.bend as Ast
 
 # Graph validation, first-class.
 #
@@ -39,16 +41,24 @@ import ./model.bend as Model
 # `validate_sound` law in LAWS.bend asserts.  `validate_full` attaches the
 # diagnostic list to the same verdict for reporting.
 
-# Input shape: one row per page, exactly as frontmatter+path derivation
-# produces it.  parent is a page id or absent (root).
+# Input shape: one row per page, exactly as frontmatter+path derivation and
+# the per-page markdown parse produce it.  parent is a page id or absent
+# (root); title/status are the frontmatter values after defaults; document is
+# the parsed bendown document of the frontmatter-stripped body.  These fields
+# are part of the graph artifact so downstream emission never has to consult
+# the pre-validation page batch.
 type RawNode is Data:
-  RawNode{id: String, parent: Maybe<&2, String>}
+  RawNode{id: String, parent: Maybe<&2, String>, title: Maybe<&2, String>,
+    status: Fm.FmStatus, document: Ast.Document}
 
 # A validated node carries its depth in the forest: roots are 0, every other
 # node is exactly one deeper than its parent.  The depth assignment is the
-# certificate of forest shape — see certificate_check below.
+# certificate of forest shape — see certificate_check below.  The publication
+# metadata and parsed document ride along unchanged: validation certifies the
+# graph that emission actually consumes.
 type GraphNode is Data:
-  GraphNode{id: String, parent: Maybe<&2, String>, depth: Nat}
+  GraphNode{id: String, parent: Maybe<&2, String>, depth: Nat,
+    title: Maybe<&2, String>, status: Fm.FmStatus, document: Ast.Document}
 
 type ValidatedGraph is Data:
   ValidatedGraph{nodes: List<&2, GraphNode>}
@@ -82,14 +92,17 @@ def vg_of(nodes: List<&2, GraphNode>) -> ValidatedGraph:
 def g_str(+s: String) -> Maybe<&2, String>:
   Some{s}
 
-def g_raw(+id: String, p: Maybe<&2, String>) -> RawNode:
-  RawNode{id, p}
+def g_raw(+id: String, p: Maybe<&2, String>, t: Maybe<&2, String>,
+  +status: Fm.FmStatus, document: Ast.Document) -> RawNode:
+  RawNode{id, p, t, status, document}
 
-def g_raw_some(+id: String, p: Maybe<&2, String>) -> Maybe<&2, RawNode>:
-  Some{g_raw(id, p)}
+def g_raw_some(+id: String, p: Maybe<&2, String>, t: Maybe<&2, String>,
+  +status: Fm.FmStatus, document: Ast.Document) -> Maybe<&2, RawNode>:
+  Some{g_raw(id, p, t, status, document)}
 
-def g_node(+id: String, +p: Maybe<&2, String>, +d: Nat) -> GraphNode:
-  GraphNode{id, p, d}
+def g_node(+id: String, +p: Maybe<&2, String>, +d: Nat, +t: Maybe<&2, String>,
+  +status: Fm.FmStatus, document: Ast.Document) -> GraphNode:
+  GraphNode{id, p, d, t, status, document}
 
 def g_diag(k: DiagKind, +id: String, o: Maybe<&2, String>) -> Diag:
   Diag{k, id, o}
@@ -120,7 +133,7 @@ def id_member(+id: String, nodes: List<&2, RawNode>) -> Bool:
       False{}
     case +h <> t:
       match h:
-        case RawNode{+nid, parent}:
+        case RawNode{+nid, parent, title, status, document}:
           Model.ifs(Bool, String.eq(id, nid),
             u => True{},
             u => id_member(id, t))
@@ -131,7 +144,7 @@ def count_id(+id: String, nodes: List<&2, RawNode>) -> Nat:
       0n
     case +h <> t:
       match h:
-        case RawNode{+nid, parent}:
+        case RawNode{+nid, parent, title, status, document}:
           Nat.add(
             Model.ifs(Nat, String.eq(id, nid), u => 1n, u => 0n),
             count_id(id, t))
@@ -144,7 +157,7 @@ def case_hit(+id: String, nodes: List<&2, RawNode>) -> Maybe<&2, String>:
       None{}
     case +h <> t:
       match h:
-        case RawNode{+nid, parent}:
+        case RawNode{+nid, parent, title, status, document}:
           Model.ifs(Maybe<&2, String>,
             Bool.and(Bool.not(String.eq(id, nid)),
               String.eq(String.to_lower(id), String.to_lower(nid))),
@@ -157,9 +170,9 @@ def find_raw(+id: String, nodes: List<&2, RawNode>) -> Maybe<&2, RawNode>:
       None{}
     case +h <> t:
       match h:
-        case RawNode{+nid, +parent}:
+        case RawNode{+nid, +parent, title, status, document}:
           Model.ifs(Maybe<&2, RawNode>, String.eq(id, nid),
-            u => g_raw_some(nid, parent),
+            u => g_raw_some(nid, parent, title, status, document),
             u => find_raw(id, t))
 
 # --- the depth assignment ------------------------------------------------------
@@ -183,7 +196,7 @@ def chain_ok(+fuel: Nat, +start: String, +cur: String, +nodes: List<&2, RawNode>
           True{}
         case Some{+rn}:
           match rn:
-            case RawNode{id2, parent}:
+            case RawNode{id2, parent, title, status, document}:
               match parent:
                 case None{}:
                   True{}
@@ -207,7 +220,7 @@ def depth_of(+fuel: Nat, +id: String, +nodes: List<&2, RawNode>, m: Maybe<&2, Ra
           0n
         case Some{+rn}:
           match rn:
-            case RawNode{id2, parent}:
+            case RawNode{id2, parent, title, status, document}:
               match parent:
                 case None{}:
                   0n
@@ -216,8 +229,8 @@ def depth_of(+fuel: Nat, +id: String, +nodes: List<&2, RawNode>, m: Maybe<&2, Ra
 
 def assign_node(+all: List<&2, RawNode>, +fuel: Nat, n: RawNode) -> GraphNode:
   match n:
-    case RawNode{+id, +parent}:
-      g_node(id, parent, depth_of(fuel, id, all, find_raw(id, all)))
+    case RawNode{+id, +parent, title, status, document}:
+      g_node(id, parent, depth_of(fuel, id, all, find_raw(id, all)), title, status, document)
 
 def assign_go(+all: List<&2, RawNode>, +fuel: Nat, xs: List<&2, RawNode>) -> List<&2, GraphNode>:
   match xs:
@@ -255,7 +268,7 @@ def dup_go(xs: List<&2, RawNode>, +all: List<&2, RawNode>) -> List<&2, Diag>:
       Nil{}
     case h <> t:
       match h:
-        case RawNode{+id, parent}:
+        case RawNode{+id, parent, title, status, document}:
           diag_cons(dup_diag(id, all), dup_go(t, all))
 
 # 1b. case-insensitive collisions: distinct ids equal after lowering.
@@ -270,7 +283,7 @@ def case_go(xs: List<&2, RawNode>, +all: List<&2, RawNode>) -> List<&2, Diag>:
       Nil{}
     case h <> t:
       match h:
-        case RawNode{+id, parent}:
+        case RawNode{+id, parent, title, status, document}:
           diag_cons(case_diag(id, all), case_go(t, all))
 
 # 2. dangling parents: a parent id that names no node.
@@ -289,7 +302,7 @@ def dang_go(xs: List<&2, RawNode>, +all: List<&2, RawNode>) -> List<&2, Diag>:
       Nil{}
     case h <> t:
       match h:
-        case RawNode{+id, +parent}:
+        case RawNode{+id, +parent, title, status, document}:
           diag_cons(dang_diag(id, parent, all), dang_go(t, all))
 
 # 3a. self-parents.
@@ -308,7 +321,7 @@ def self_go(xs: List<&2, RawNode>) -> List<&2, Diag>:
       Nil{}
     case h <> t:
       match h:
-        case RawNode{+id, +parent}:
+        case RawNode{+id, +parent, title, status, document}:
           diag_cons(self_diag(id, parent), self_go(t))
 
 # 3b. cycles: a node's ancestor chain loops (either back to the node, or
@@ -332,7 +345,7 @@ def cycle_go(xs: List<&2, RawNode>, +all: List<&2, RawNode>, +fuel: Nat) -> List
       Nil{}
     case h <> t:
       match h:
-        case RawNode{+id, +parent}:
+        case RawNode{+id, +parent, title, status, document}:
           diag_cons(cycle_diag(id, parent, all, fuel), cycle_go(t, all, fuel))
 
 # Every diagnostic, in spec order: duplicates, case collisions, dangling
@@ -359,7 +372,7 @@ def find_depth(+id: String, nodes: List<&2, GraphNode>) -> Maybe<&2, Nat>:
       None{}
     case +h <> t:
       match h:
-        case GraphNode{+nid, parent, +depth}:
+        case GraphNode{+nid, parent, +depth, title, status, document}:
           Model.ifs(Maybe<&2, Nat>, String.eq(id, nid),
             u => some_nat(depth),
             u => find_depth(id, t))
@@ -370,7 +383,7 @@ def id_case_absent(+id: String, nodes: List<&2, GraphNode>) -> Bool:
       True{}
     case +h <> t:
       match h:
-        case GraphNode{+nid, parent, depth}:
+        case GraphNode{+nid, parent, depth, title, status, document}:
           Model.ifs(Bool, String.eq(String.to_lower(id), String.to_lower(nid)),
             u => False{},
             u => id_case_absent(id, t))
@@ -381,7 +394,7 @@ def ids_unique(nodes: List<&2, GraphNode>) -> Bool:
       True{}
     case +h <> +t:
       match h:
-        case GraphNode{+nid, parent, depth}:
+        case GraphNode{+nid, parent, depth, title, status, document}:
           Bool.and(id_case_absent(nid, t), ids_unique(t))
 
 def depth_parent_check(+all: List<&2, GraphNode>, +depth: Nat, m: Maybe<&2, Nat>) -> Bool:
@@ -404,7 +417,7 @@ def depths_coherent(nodes: List<&2, GraphNode>, +all: List<&2, GraphNode>) -> Bo
       True{}
     case +h <> t:
       match h:
-        case GraphNode{+nid, +parent, +depth}:
+        case GraphNode{+nid, +parent, +depth, +title, +status, +document}:
           Bool.and(depth_coherent_node(all, nid, parent, depth), depths_coherent(t, all))
 
 # A depth assignment certifies forest shape: ids unique up to letter case,
@@ -462,7 +475,7 @@ def graph_nodes(+g: ValidatedGraph) -> List<&2, GraphNode>:
 
 def node_id(+n: GraphNode) -> String:
   match n:
-    case GraphNode{+id, parent, depth}:
+    case GraphNode{+id, parent, depth, title, status, document}:
       id
 
 def graph_ids_go(xs: List<&2, GraphNode>) -> List<&2, String>:
@@ -471,7 +484,7 @@ def graph_ids_go(xs: List<&2, GraphNode>) -> List<&2, String>:
       Nil{}
     case +h <> t:
       match h:
-        case GraphNode{+id, parent, depth}:
+        case GraphNode{+id, parent, depth, title, status, document}:
           id <> graph_ids_go(t)
 
 # The page ids of a validated graph, in node order — the membership set
@@ -485,7 +498,7 @@ def gnode_member(+id: String, nodes: List<&2, GraphNode>) -> Bool:
       False{}
     case +h <> t:
       match h:
-        case GraphNode{+nid, parent, depth}:
+        case GraphNode{+nid, parent, depth, title, status, document}:
           Model.ifs(Bool, String.eq(id, nid),
             u => True{},
             u => gnode_member(id, t))
@@ -496,15 +509,15 @@ def find_gnode(+id: String, nodes: List<&2, GraphNode>) -> Maybe<&2, GraphNode>:
       g_node_none()
     case +h <> t:
       match h:
-        case GraphNode{+nid, +parent, +depth}:
+        case GraphNode{+nid, +parent, +depth, +title, +status, +document}:
           Model.ifs(Maybe<&2, GraphNode>, String.eq(id, nid),
-            u => g_node_some(g_node(nid, parent, depth)),
+            u => g_node_some(g_node(nid, parent, depth, title, status, document)),
             u => find_gnode(id, t))
 
 # Does this node name `id` as its parent?
 def node_parents_id(+id: String, n: GraphNode) -> Bool:
   match n:
-    case GraphNode{nid, parent, depth}:
+    case GraphNode{nid, parent, depth, title, status, document}:
       match parent:
         case None{}:
           False{}
@@ -517,9 +530,9 @@ def children_go(+id: String, xs: List<&2, GraphNode>) -> List<&2, GraphNode>:
       Nil{}
     case +h <> +t:
       match h:
-        case GraphNode{+nid, +parent, +depth}:
-          Model.ifs(List<&2, GraphNode>, node_parents_id(id, g_node(nid, parent, depth)),
-            u => g_node(nid, parent, depth) <> children_go(id, t),
+        case GraphNode{+nid, +parent, +depth, +title, +status, +document}:
+          Model.ifs(List<&2, GraphNode>, node_parents_id(id, g_node(nid, parent, depth, title, status, document)),
+            u => g_node(nid, parent, depth, title, status, document) <> children_go(id, t),
             u => children_go(id, t))
 
 # The direct children of a page id in the validated forest (for nav).

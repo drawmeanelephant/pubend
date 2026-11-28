@@ -1,6 +1,8 @@
 import Base
 import ./harness.bend as H
 import ../src/graph.bend as G
+import ../src/frontmatter.bend as Fm
+import ../engine/src/ast.bend as Ast
 
 # Smoke tests for the real validator: every diagnostic class, aggregation
 # (multiple violations reported together), and the certificate contract —
@@ -8,7 +10,7 @@ import ../src/graph.bend as G
 # rejected.
 
 def rn(+id: String, p: Maybe<&2, String>) -> G.RawNode:
-  G.RawNode{id, p}
+  G.RawNode{id, p, None{}, Fm.FmPublished{}, Ast.document_empty()}
 
 def no_parent() -> Maybe<&2, String>:
   None{}
@@ -95,7 +97,7 @@ def valid_forest() -> List<&2, G.RawNode>:
   rn("c", par("b")) <> Nil{}
 
 def gn(+id: String, parent: Maybe<&2, String>, +depth: Nat) -> G.GraphNode:
-  G.GraphNode{id, parent, depth}
+  G.GraphNode{id, parent, depth, None{}, Fm.FmPublished{}, Ast.document_empty()}
 
 def vg(nodes: List<&2, G.GraphNode>) -> G.ValidatedGraph:
   G.ValidatedGraph{nodes}
@@ -130,7 +132,7 @@ def child_ids_go(xs: List<&2, G.GraphNode>) -> String:
     case Nil{}: ""
     case +h <> t:
       match h:
-        case G.GraphNode{+id, parent, depth}:
+        case G.GraphNode{+id, parent, depth, title, status, document}:
           String.append(id, String.append(",", child_ids_go(t)))
 
 def children_str(+id: String, m: Maybe<&2, G.ValidatedGraph>) -> String:

@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+fail() {
+  printf '%s\n' "pubend: $1" >&2
+  exit 3
+}
+
+script=$0
+case $script in
+  */*) ;;
+  *)
+    resolved=$(command -v "$script" 2>/dev/null) || resolved=
+    [ -n "$resolved" ] || fail "cannot resolve executable path"
+    script=$resolved
+    ;;
+esac
+
+depth=0
+while [ -L "$script" ]; do
+  depth=$((depth + 1))
+  [ "$depth" -le 40 ] || fail "too many symlinks resolving executable path"
+  link=$(readlink "$script" 2>/dev/null) || fail "cannot read symlink: $script"
+  case $link in
+    /*)
+      script=$link
+      ;;
+    *)
+      dir=$(CDPATH='' cd -P "$(dirname "$script")" 2>/dev/null && pwd -P) || fail "cannot resolve symlink directory: $script"
+      script=$dir/$link
+      ;;
+  esac
+done
+
+dir=$(CDPATH='' cd -P "$(dirname "$script")" 2>/dev/null && pwd -P) || fail "cannot resolve executable directory: $script"
+cli=$dir/tools/pubend.mjs
+[ -f "$cli" ] || fail "cannot find CLI: $cli"
+exec node "$cli" "$@"

@@ -19,17 +19,20 @@ def case_class(+name: String, +t: String, +want: String) -> H.Check:
 # --- the page id set resolution runs against ------------------------------------
 
 def ids() -> List<&2, String>:
-  "index" <> "guides/a" <> "guides/b" <> "guides/deep/c" <> "top" <> Nil{}
+  "index" <> "guides/a" <> "guides/b" <> "guides/deep/c" <> "top" <>
+  "guides/sp ace" <> "guides/é" <> "guides/per%cent" <> "guides/hash#x" <> "guides/q?x" <> "guides/%2E%2E" <> Nil{}
 
 def kind_name(k: L.LinkErrKind) -> String:
   match k:
     case L.LErrQuery{}: "query"
     case L.LErrEscape{}: "escape"
     case L.LErrDangling{}: "dangling"
+    case L.LErrMalformedPercent{}: "malformed-percent"
+    case L.LErrInvalidPercentUtf8{}: "invalid-percent-utf8"
 
 def err_str(e: L.LinkError) -> String:
   match e:
-    case L.LinkError{+source, +target, +kind}:
+    case L.LinkError{+source, +target, +kind, span, link_kind}:
       String.append(kind_name(kind), String.append(":", target))
 
 def outcome_str(o: L.LinkOutcome) -> String:
@@ -76,6 +79,13 @@ def checks() -> List<&2, H.Check>:
   case_class("cls-mdx", "a/b.mdx", "pass") <>
   case_class("cls-empty", "", "pass") <>
   case_class("cls-mailto-md", "mailto:x.md", "ext") <>
+  case_class("cls-scheme-no-slashes", "https:x.md", "ext") <>
+  case_class("cls-scheme-upper", "HTTP://x.md", "ext") <>
+  case_class("cls-scheme-plus", "x+y:z.md", "ext") <>
+  case_class("cls-scheme-dotdash", "x.y-z:q.md", "ext") <>
+  case_class("cls-scheme-digit-after", "x1:q.md", "ext") <>
+  case_class("cls-not-scheme-digit", "1:q.md", "int") <>
+  case_class("cls-not-scheme-empty", ":q.md", "int") <>
   # --- resolution: internal happy paths ---
   case_res("res-sibling", "guides/a", "b.md", "ok:guides/b") <>
   case_res("res-sibling-frag", "guides/a", "b.md#sec", "ok:guides/b") <>
@@ -86,6 +96,27 @@ def checks() -> List<&2, H.Check>:
   case_res("res-dotslash", "guides/a", "./../top.md", "ok:top") <>
   case_res("res-dups", "guides/a", ".//b.md", "ok:guides/b") <>
   case_res("res-self", "guides/a", "a.md", "ok:guides/a") <>
+  case_res("res-encoded-space", "guides/a", "sp%20ace.md", "ok:guides/sp ace") <>
+  case_res("res-encoded-unicode", "guides/a", "%C3%A9.md", "ok:guides/é") <>
+  case_res("res-encoded-percent", "guides/a", "per%25cent.md", "ok:guides/per%cent") <>
+  case_res("res-encoded-hash-text", "guides/a", "hash%23x.md", "ok:guides/hash#x") <>
+  case_res("res-encoded-query-text", "guides/a", "q%3Fx.md", "ok:guides/q?x") <>
+  case_res("res-literal-space", "guides/a", "sp ace.md", "ok:guides/sp ace") <>
+  case_res("res-literal-unicode", "guides/a", "é.md", "ok:guides/é") <>
+  case_res("res-double-encoded-once", "guides/a", "%252E%252E.md", "ok:guides/%2E%2E") <>
+  case_res("res-encoded-slash", "guides/a", "deep%2Fc.md", "ok:guides/deep/c") <>
+  case_res("res-encoded-up", "guides/a", "%2E%2E/top.md", "ok:top") <>
+  case_res("res-encoded-escape", "guides/a", "%2E%2E/%2E%2E/x.md", "escape:%2E%2E/%2E%2E/x.md") <>
+  case_res("res-malformed-percent", "guides/a", "bad%.md", "malformed-percent:bad%.md") <>
+  case_res("res-short-percent", "guides/a", "bad%4.md", "malformed-percent:bad%4.md") <>
+  case_res("res-nonhex-percent", "guides/a", "bad%GG.md", "malformed-percent:bad%GG.md") <>
+  case_res("res-invalid-percent-utf8", "guides/a", "bad%C0%80.md", "invalid-percent-utf8:bad%C0%80.md") <>
+  case_res("res-invalid-then-malformed-percent", "guides/a", "bad%C3x%GG.md", "invalid-percent-utf8:bad%C3x%GG.md") <>
+  case_res("res-incomplete-percent-utf8", "guides/a", "bad%E2%82.md", "invalid-percent-utf8:bad%E2%82.md") <>
+  case_res("res-surrogate-percent-utf8", "guides/a", "bad%ED%A0%80.md", "invalid-percent-utf8:bad%ED%A0%80.md") <>
+  case_res("res-above-max-percent-utf8", "guides/a", "bad%F4%90%80%80.md", "invalid-percent-utf8:bad%F4%90%80%80.md") <>
+  case_res("res-lone-continuation-percent-utf8", "guides/a", "bad%80.md", "invalid-percent-utf8:bad%80.md") <>
+  case_res("res-split-multibyte-percent-utf8", "guides/a", "bad%C3x%A9.md", "invalid-percent-utf8:bad%C3x%A9.md") <>
   # --- resolution: errors ---
   case_res("res-query", "guides/a", "b.md?x=1", "query:b.md?x=1") <>
   case_res("res-query-frag", "guides/a", "b.md?x=1#s", "query:b.md?x=1#s") <>

@@ -28,7 +28,12 @@ Diagnostic classes (stable strings, compared by fixtures):
     link-root-escape           internal .md link normalizes above content root
     link-nonexistent-page      internal .md link resolves to no page id
     link-query                 internal .md link carrying a ?query suffix
+    link-malformed-percent     internal .md link path has a malformed % triplet
+    link-invalid-percent-utf8  internal .md link percent bytes are not valid UTF-8
     non-md-file                regular file under content/ not ending in .md
+    invalid-utf8               page bytes are not valid UTF-8
+    symlinked-entry            symlinked entry under content/ (file, directory,
+                               or dangling); symlinks are never followed
     valid                      no violations (EXPECTED-file pseudo class)
 
 Extra classes with no corpus-negative fixture (spec-mandated, rarely triggered):
@@ -45,12 +50,15 @@ Synthetic fixtures:
     --self-test additionally asserts the physical tree of a synthetic fixture
     validates as 'valid' without injection.
 
-Markdown link extraction is an approximation of the engine's grammar: fenced
-and indented code blocks, inline code spans and HTML comments are stripped;
-inline links [t](d), images, and reference-style definitions/usages
-([t][l], [t][], [l]) are found; footnote definitions/usages ([^n]) are ignored;
-backslash escapes and raw-HTML <a href> are not recognized. Directory
-symlinks under content/ are not descended (os.walk followlinks=False).
+Markdown link extraction is only a scratch approximation of the engine's
+grammar, not a Markdown parser and not evidence about full CommonMark behavior:
+fenced and indented code blocks, inline code spans and HTML comments are
+stripped; inline links [t](d), images, and reference-style definitions/usages
+([t][l], [t][], [l]) are found; footnote definitions/usages ([^n]) are ignored.
+Autolinks, backslash escapes, raw-HTML <a href>, entity handling, and the full
+reference-label matching grammar are not recognized. Corpus fixtures should
+exercise only this documented subset unless the oracle is deliberately extended.
+Symlinked entries under content/ are diagnosed and never followed.
 """
 
 from __future__ import annotations
@@ -65,6 +73,7 @@ from dataclasses import dataclass
 MAX_PAGE_BYTES = 1024 * 1024
 CLOSED_KEYS = {"title", "parent", "status"}
 STATUS_VALUES = {"published", "draft"}
+RFC3986_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 SYNTHETIC_FILE = "FIXTURE.synthetic.json"
 EXPECTED_FILE = "EXPECTED"
@@ -295,11 +304,25 @@ def extract_links(page, body_lines, body_start):
 def load_pages(content_dir):
     pages = []
     diags = []
-    for dirpath, dirnames, filenames in os.walk(content_dir):
+    for dirpath, dirnames, filenames in os.walk(content_dir, followlinks=False):
         dirnames.sort()
+        real_dirnames = []
+        for dn in dirnames:
+            full = os.path.join(dirpath, dn)
+            rel = os.path.relpath(full, content_dir).replace(os.sep, "/")
+            if os.path.islink(full):
+                diags.append(Diag("symlinked-entry", rel, 0, 0,
+                                  "symlinked entry under content/ is an input-tree error"))
+            else:
+                real_dirnames.append(dn)
+        dirnames[:] = real_dirnames
         for fn in sorted(filenames):
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, content_dir).replace(os.sep, "/")
+            if os.path.islink(full):
+                diags.append(Diag("symlinked-entry", rel, 0, 0,
+                                  "symlinked entry under content/ is an input-tree error"))
+                continue
             if not fn.endswith(".md"):
                 diags.append(Diag("non-md-file", rel, 0, 0,
                                   "regular file under content/ not ending in .md"))
@@ -312,8 +335,18 @@ def load_pages(content_dir):
             if size > MAX_PAGE_BYTES:
                 diags.append(Diag("oversized-page", rel, 0, 0,
                                   f"{size} bytes exceeds 1 MiB ceiling"))
-            with open(full, encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
+                continue
+            with open(full, "rb") as fh:
+                raw = fh.read()
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                prefix = raw[:exc.start].decode("utf-8")
+                line = prefix.count("\n") + 1
+                col = len(prefix.rsplit("\n", 1)[-1]) + 1
+                diags.append(Diag("invalid-utf8", rel, line, col,
+                                  f"invalid UTF-8 at byte offset {exc.start}: {exc.reason}"))
+                continue
             lines = text.splitlines()
             page = Page(id=rel[:-3], path=rel, parent=None, parent_line=0,
                         links=[])
@@ -331,7 +364,7 @@ def load_pages(content_dir):
 
 
 def classify(dest):
-    if "://" in dest or dest.lower().startswith("mailto:"):
+    if RFC3986_SCHEME_RE.match(dest):
         return "external"
     if dest == "" or dest.startswith("#") or dest.startswith("/"):
         return "passthrough"
@@ -341,10 +374,52 @@ def classify(dest):
     return "internal" if base.endswith(".md") else "passthrough"
 
 
+def percent_decode_path(text):
+    """Decode one internal-link path exactly once. Returns (decoded, error_class).
+    Contiguous percent triplets are UTF-8 byte input; malformed triplets and
+    invalid UTF-8 are distinct content errors. Ordinary Unicode/scalar text
+    passes through and decoded output is never reinterpreted."""
+    out = []
+    pending = bytearray()
+
+    def flush():
+        if not pending:
+            return True
+        try:
+            out.append(pending.decode("utf-8", errors="strict"))
+        except UnicodeDecodeError:
+            return False
+        pending.clear()
+        return True
+
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c != "%":
+            if not flush():
+                return None, "link-invalid-percent-utf8"
+            out.append(c)
+            i += 1
+            continue
+        if i + 2 >= len(text):
+            return None, "link-malformed-percent"
+        hx = text[i + 1:i + 3]
+        if not all(c in "0123456789abcdefABCDEF" for c in hx):
+            return None, "link-malformed-percent"
+        pending.append(int(hx, 16))
+        i += 3
+    if not flush():
+        return None, "link-invalid-percent-utf8"
+    return "".join(out), None
+
+
 def resolve(page_id, dest):
-    """dest: internal .md target, fragment-stripped, no query. Returns
-    normalized target id, or None if the path escapes the content root."""
+    """dest: internal .md target. Returns (target_id, error_class), where
+    error_class is None, a percent-decoding class, or 'escape'."""
     base = dest.split("#", 1)[0]
+    base, error = percent_decode_path(base)
+    if error is not None:
+        return None, error
     d = page_id.rsplit("/", 1)[0] if "/" in page_id else ""
     joined = f"{d}/{base}" if d else base
     stack = []
@@ -353,16 +428,20 @@ def resolve(page_id, dest):
             continue
         if seg == "..":
             if not stack:
-                return None
+                return None, "escape"
             stack.pop()
         else:
             stack.append(seg)
     target = "/".join(stack)
-    return target[:-3] if target.endswith(".md") else target
+    return (target[:-3] if target.endswith(".md") else target), None
 
 
 # ---------------------------------------------------------------------------
 # graph checks (v0-spec §4)
+
+
+def ascii_lower_ascii_only(s):
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s)
 
 
 def graph_checks(pages):
@@ -377,7 +456,7 @@ def graph_checks(pages):
                                   f"id {pid!r} claimed by {len(ps)} pages"))
     lower = {}
     for p in pages:
-        lower.setdefault(p.id.lower(), set()).add(p.id)
+        lower.setdefault(ascii_lower_ascii_only(p.id), set()).add(p.id)
     for lid, ids in lower.items():
         if len(ids) > 1:
             for p in pages:
@@ -432,8 +511,14 @@ def link_checks(pages, by_id):
                                   f"internal link {dest!r} carries a ?query"))
                 continue
             n_internal += 1
-            target = resolve(p.id, dest)
-            if target is None:
+            target, error = resolve(p.id, dest)
+            if error == "link-malformed-percent":
+                diags.append(Diag("link-malformed-percent", p.path, ln, col,
+                                  f"internal link {dest!r} has a malformed percent triplet"))
+            elif error == "link-invalid-percent-utf8":
+                diags.append(Diag("link-invalid-percent-utf8", p.path, ln, col,
+                                  f"internal link {dest!r} percent bytes are not valid UTF-8"))
+            elif error == "escape":
                 diags.append(Diag("link-root-escape", p.path, ln, col,
                                   f"link {dest!r} escapes the content root"))
             elif target not in by_id:
