@@ -936,23 +936,49 @@ function compareCollision(a, b) {
   return compareNames(a.descendantPage, b.descendantPage);
 }
 
-function findOutputPathCollision(pages) {
-  const owners = new Map(HOST_FIXED_OUTPUT_FILES.map((rel) => [rel, null]));
+function asciiLower(value) {
+  return value.replace(/[A-Z]/g, (character) => character.toLowerCase());
+}
+
+function outputPathKey(rel, asciiCaseAliases) {
+  return asciiCaseAliases ? asciiLower(rel) : rel;
+}
+
+async function filesystemAsciiCaseAliases(contentDir) {
+  const alias = path.join(path.dirname(contentDir), 'CONTENT');
+  try {
+    const aliasLstat = await fsp.lstat(alias);
+    if (aliasLstat.isSymbolicLink() || !aliasLstat.isDirectory()) return false;
+    const contentStat = await fsp.stat(contentDir);
+    const aliasStat = await fsp.stat(alias);
+    return contentStat.dev === aliasStat.dev && contentStat.ino === aliasStat.ino;
+  } catch {
+    return false;
+  }
+}
+
+function findOutputPathCollision(pages, asciiCaseAliases) {
+  const owners = new Map(HOST_FIXED_OUTPUT_FILES.map((rel) => [
+    outputPathKey(rel, asciiCaseAliases),
+    { rel, page: null },
+  ]));
   const entries = [];
   const collisions = [];
 
   for (const page of pages) {
     const rel = `${page.id}.html`;
-    if (owners.has(rel)) {
+    const key = outputPathKey(rel, asciiCaseAliases);
+    if (owners.has(key)) {
+      const owner = owners.get(key);
       collisions.push({
-        ancestorRel: rel,
+        ancestorRel: owner.rel,
         descendantRel: rel,
-        ancestorPage: owners.get(rel),
+        ancestorPage: owner.page,
         descendantPage: page.id,
         exact: true,
       });
     } else {
-      owners.set(rel, page.id);
+      owners.set(key, { rel, page: page.id });
     }
     entries.push({ id: page.id, rel });
   }
@@ -961,11 +987,12 @@ function findOutputPathCollision(pages) {
     const segments = entry.rel.split('/');
     for (let i = 1; i < segments.length; i += 1) {
       const ancestorRel = segments.slice(0, i).join('/');
-      if (owners.has(ancestorRel)) {
+      const owner = owners.get(outputPathKey(ancestorRel, asciiCaseAliases));
+      if (owner) {
         collisions.push({
-          ancestorRel,
+          ancestorRel: owner.rel,
           descendantRel: entry.rel,
-          ancestorPage: owners.get(ancestorRel),
+          ancestorPage: owner.page,
           descendantPage: entry.id,
           exact: false,
         });
@@ -993,8 +1020,8 @@ function outputPathCollisionFailure(out, collision) {
   });
 }
 
-function assertNoOutputPathCollisions(out, pages) {
-  const collision = findOutputPathCollision(pages);
+function assertNoOutputPathCollisions(out, pages, asciiCaseAliases) {
+  const collision = findOutputPathCollision(pages, asciiCaseAliases);
   if (collision) outputPathCollisionFailure(out, collision);
 }
 
@@ -1264,12 +1291,13 @@ async function bestEffortRemoveStage(stage) {
   }
 }
 
-async function publishOutput(containmentRoot, canonicalRoot, out, pages) {
+async function publishOutput(containmentRoot, canonicalRoot, contentDir, out, pages) {
   const lock = `${out}.pubend-lock`;
   const stage = `${out}.pubend-stage`;
   const backup = `${out}.pubend-previous`;
 
-  assertNoOutputPathCollisions(out, pages);
+  const asciiCaseAliases = await filesystemAsciiCaseAliases(contentDir);
+  assertNoOutputPathCollisions(out, pages, asciiCaseAliases);
   await prepareOutputParent(containmentRoot, canonicalRoot, out);
 
   let lockAcquired = false;
@@ -1316,7 +1344,7 @@ async function run(argv) {
   const compiled = invokeCompileReport(prepared.compileReport, scan.pages, prepared.artifact);
   if (!compiled.ok) throw new CliFailure(1, compiled.diagnostics);
 
-  await publishOutput(containmentRoot, site.realRoot, out, compiled.pages);
+  await publishOutput(containmentRoot, site.realRoot, contentDir, out, compiled.pages);
   return 0;
 }
 

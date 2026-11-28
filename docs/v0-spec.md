@@ -190,7 +190,9 @@ discover (IO) → read+parse batch (parallel pure map over pages)
   root. A relative `--out` resolves against `DIR`; an absolute `--out` is accepted only when its canonical form
   remains inside the canonical site root. The host canonicalizes the longest existing prefix of the output path
   before making containment decisions, so case-only aliases and symlinked ancestors cannot make `content` or an
-  outside directory look distinct. The output directory must not be the site root, `DIR/content`, or any
+  outside directory look distinct. Whether a differently cased spelling is such an alias is filesystem-dependent:
+  on a case-sensitive tree it is a distinct output name, while exact `DIR/content` remains forbidden everywhere.
+  The output directory must not be the site root, `DIR/content`, or any
   descendant of `DIR/content`.
 - The final path component of `OUT` must not end with `.pubend-lock`, `.pubend-stage`, or `.pubend-previous`,
   in any ASCII letter case. These names are reserved publication namespace. A violation is an exit-2
@@ -199,7 +201,9 @@ discover (IO) → read+parse batch (parallel pure map over pages)
   and `a.html/x` require `a.html` to be both a file and a directory. The same failure applies when a page output
   requires a fixed host publication file such as `_pubend/manifest.json` or an ownership-marker path to be a
   directory. The host detects these shapes before writing and fails with exit 3 and an
-  `output-path-collision` diagnostic. v0 does not define an alternate output mapping for these inputs.
+  `output-path-collision` diagnostic. On a filesystem where ASCII case-only names alias, case-variant output
+  shapes collide with the fixed host files or with one another; on a case-sensitive tree those differently
+  cased output names remain distinct. v0 does not define an alternate output mapping for these inputs.
 - One layout shell for all pages. In order, the shell is `<!doctype html>`, an `<html lang="en">` element, a
   head containing exactly `<meta charset="utf-8">` and `<title>`, and a body containing one
   `<nav class="pubend-nav">` followed by `<main>` around the rendered fragment. The nav contains a parent link
