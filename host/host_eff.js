@@ -151,7 +151,16 @@ function hf_readdir_impl(input) {
     // that do not round-trip (including invalid UTF-8 on platforms that allow
     // them) fall back to an exact-path lstat.
     const names = fs.readdirSync(dirbuf, { encoding: "buffer" });
-    const typed = fs.readdirSync(dirbuf, { withFileTypes: true });
+    // The typed scan is a kind-bit optimization only.  Real Node rejects
+    // Buffer paths with withFileTypes (ERR_INVALID_ARG_TYPE despite the type
+    // union), so any typed-scan failure degrades to per-entry lstat on exact
+    // byte paths rather than failing the whole directory scan.
+    let typed = [];
+    try {
+      typed = fs.readdirSync(dirbuf, { withFileTypes: true });
+    } catch (e) {
+      typed = [];
+    }
     const kinds = new Map();
     const collisions = new Set();
     for (const ent of typed) {
@@ -196,8 +205,15 @@ function hf_realpath_impl(input) {
   if (bad) {
     return io_fail(bad.error);
   }
+  const bytes = io_unlist(input);
+  if (bytes.length === 0) {
+    // POSIX realpath("") is ENOENT; Node's realpathSync(Buffer.alloc(0))
+    // silently canonicalizes the process cwd instead, which must never
+    // be treated as a successful canonicalization.
+    return io_fail(2);
+  }
   try {
-    const out = require("fs").realpathSync(Buffer.from(io_unlist(input)),
+    const out = require("fs").realpathSync(Buffer.from(bytes),
       { encoding: "buffer" });
     return io_done(io_list(out, out.length));
   } catch (e) {

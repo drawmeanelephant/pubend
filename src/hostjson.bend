@@ -121,14 +121,59 @@ def hostjson_page_object(p: HostManifestPage) -> String:
         "      \"sha256\": " ++ hostjson_string(sha256) ++ "\n" ++
         "    }"
 
-def hostjson_page_objects_join(xs: List<&2, HostManifestPage>) -> String:
+def HostJsonRevStringFuel() -> Type:
+  List<&2, String> & Nat
+
+def hostjson_string_cons(x: String, xs: List<&2, String>) -> List<&2, String>:
+  x <> xs
+
+def hostjson_page_object_revstrings_go(xs: List<&2, HostManifestPage>,
+  rev: List<&2, String>, fuel: Nat) -> HostJsonRevStringFuel():
   match xs:
     case Nil{}:
+      (rev, fuel)
+    case h <> t:
+      hostjson_page_object_revstrings_go(t,
+        hostjson_string_cons(hostjson_page_object(h), rev), 1n+fuel)
+
+def hostjson_join_pair(left: String, right: String) -> String:
+  left ++ ",\n" ++ right
+
+def hostjson_pair_pass_go(xs: List<&2, String>, rev: List<&2, String>) ->
+  List<&2, String>:
+  match xs:
+    case Nil{}:
+      List.reverse(&2, String, rev)
+    case a <> rest:
+      match rest:
+        case Nil{}:
+          List.reverse(&2, String, hostjson_string_cons(a, rev))
+        case b <> tail:
+          hostjson_pair_pass_go(tail,
+            hostjson_string_cons(hostjson_join_pair(a, b), rev))
+
+def hostjson_join_tree_fueled(+fuel: Nat, xs: List<&2, String>) -> String:
+  match fuel:
+    case 0n:
       ""
-    case +h <> Nil{}:
-      hostjson_page_object(h)
-    case +h <> t:
-      hostjson_page_object(h) ++ ",\n" ++ hostjson_page_objects_join(t)
+    case 1n++f:
+      match xs:
+        case Nil{}:
+          ""
+        case h <> t:
+          match t:
+            case Nil{}:
+              h
+            case h2 <> t2:
+              hostjson_join_tree_fueled(f, hostjson_pair_pass_go(
+                hostjson_string_cons(h, hostjson_string_cons(h2, t2)), Nil{}))
+
+def hostjson_page_objects_join_fin(parts: HostJsonRevStringFuel()) -> String:
+  (rev, fuel) = parts
+  hostjson_join_tree_fueled(fuel, List.reverse(&2, String, rev))
+
+def hostjson_page_objects_join(xs: List<&2, HostManifestPage>) -> String:
+  hostjson_page_objects_join_fin(hostjson_page_object_revstrings_go(xs, Nil{}, 0n))
 
 def hostjson_pages_field(+pages: List<&2, HostManifestPage>, empty: Bool) -> String:
   match empty:

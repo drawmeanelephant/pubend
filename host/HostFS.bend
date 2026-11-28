@@ -158,12 +158,16 @@ def entry_info(e: DirEntry) -> DirInfo:
 def dir_info_cons(x: DirInfo, xs: List<&2, DirInfo>) -> List<&2, DirInfo>:
   x <> xs
 
-def entries_info(xs: List<&2, DirEntry>) -> List<&2, DirInfo>:
+def entries_info_go(xs: List<&2, DirEntry>, acc: List<&2, DirInfo>) ->
+  List<&2, DirInfo>:
   match xs:
     case Nil{}:
-      Nil{}
+      acc
     case h <> t:
-      dir_info_cons(entry_info(h), entries_info(t))
+      entries_info_go(t, dir_info_cons(entry_info(h), acc))
+
+def entries_info(xs: List<&2, DirEntry>) -> List<&2, DirInfo>:
+  List.reverse(&2, DirInfo, entries_info_go(xs, Nil{}))
 
 def entries_result_info(r: Result<&1, &1, U32 & String, List<&2, DirEntry>>) ->
   Result<&1, &1, U32 & String, List<&2, DirInfo>>:
