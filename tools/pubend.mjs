@@ -933,27 +933,79 @@ function compareCollision(a, b) {
   if (byAncestor !== 0) return byAncestor;
   const byDescendant = compareNames(a.descendantRel, b.descendantRel);
   if (byDescendant !== 0) return byDescendant;
-  return compareNames(a.descendantPage, b.descendantPage);
+  return compareNames(a.descendantPage ?? '', b.descendantPage ?? '');
 }
 
 function asciiLower(value) {
   return value.replace(/[A-Z]/g, (character) => character.toLowerCase());
 }
 
+function asciiUpper(value) {
+  return value.replace(/[a-z]/g, (character) => character.toUpperCase());
+}
+
 function outputPathKey(rel, asciiCaseAliases) {
   return asciiCaseAliases ? asciiLower(rel) : rel;
 }
 
-async function filesystemAsciiCaseAliases(contentDir) {
-  const alias = path.join(path.dirname(contentDir), 'CONTENT');
+async function nearestExistingOutputDirectory(out) {
+  let cur = path.dirname(path.resolve(out));
+  for (;;) {
+    try {
+      const st = await fsp.lstat(cur);
+      if (st.isDirectory()) return cur;
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT' && errorCode(error) !== 'ENOTDIR') {
+        outputFailure('output-io', cur, `cannot inspect output filesystem probe parent: ${errorMessage(error)}`);
+      }
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) return cur;
+    cur = parent;
+  }
+}
+
+async function filesystemAsciiCaseAliases(probeParent) {
+  const probeName = `.pubend-case-probe-${process.pid}-${crypto.randomUUID()}`;
+  const probe = path.join(probeParent, probeName);
   try {
-    const aliasLstat = await fsp.lstat(alias);
+    await fsp.mkdir(probe);
+  } catch (error) {
+    outputFailure('output-io', probe, `cannot create output filesystem case probe: ${errorMessage(error)}`);
+  }
+
+  try {
+    const alias = path.join(probeParent, asciiUpper(probeName));
+    let aliasLstat;
+    try {
+      aliasLstat = await fsp.lstat(alias);
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT' || errorCode(error) === 'ENOTDIR') return false;
+      outputFailure('output-io', alias, `cannot inspect output filesystem case probe alias: ${errorMessage(error)}`);
+    }
     if (aliasLstat.isSymbolicLink() || !aliasLstat.isDirectory()) return false;
-    const contentStat = await fsp.stat(contentDir);
+    const probeStat = await fsp.stat(probe);
     const aliasStat = await fsp.stat(alias);
-    return contentStat.dev === aliasStat.dev && contentStat.ino === aliasStat.ino;
-  } catch {
-    return false;
+    return probeStat.dev === aliasStat.dev && probeStat.ino === aliasStat.ino;
+  } finally {
+    try {
+      await fsp.rm(probe, { recursive: true, force: true });
+    } catch {
+      // Case-probe cleanup is best-effort and must not hide the output diagnostic.
+    }
+  }
+}
+
+function addDirectoryRequirements(directoryRequirements, fileRel, page, asciiCaseAliases) {
+  const segments = fileRel.split('/');
+  for (let i = 1; i < segments.length; i += 1) {
+    const rel = segments.slice(0, i).join('/');
+    const key = outputPathKey(rel, asciiCaseAliases);
+    if (!directoryRequirements.has(key)) directoryRequirements.set(key, new Map());
+    const spellings = directoryRequirements.get(key);
+    if (!spellings.has(rel)) {
+      spellings.set(rel, { rel, page, requiredBy: fileRel });
+    }
   }
 }
 
@@ -962,6 +1014,10 @@ function findOutputPathCollision(pages, asciiCaseAliases) {
     outputPathKey(rel, asciiCaseAliases),
     { rel, page: null },
   ]));
+  const directoryRequirements = new Map();
+  for (const rel of HOST_FIXED_OUTPUT_FILES) {
+    addDirectoryRequirements(directoryRequirements, rel, null, asciiCaseAliases);
+  }
   const entries = [];
   const collisions = [];
 
@@ -971,6 +1027,7 @@ function findOutputPathCollision(pages, asciiCaseAliases) {
     if (owners.has(key)) {
       const owner = owners.get(key);
       collisions.push({
+        kind: 'file-exact',
         ancestorRel: owner.rel,
         descendantRel: rel,
         ancestorPage: owner.page,
@@ -981,6 +1038,7 @@ function findOutputPathCollision(pages, asciiCaseAliases) {
       owners.set(key, { rel, page: page.id });
     }
     entries.push({ id: page.id, rel });
+    addDirectoryRequirements(directoryRequirements, rel, page.id, asciiCaseAliases);
   }
 
   for (const entry of entries) {
@@ -990,6 +1048,7 @@ function findOutputPathCollision(pages, asciiCaseAliases) {
       const owner = owners.get(outputPathKey(ancestorRel, asciiCaseAliases));
       if (owner) {
         collisions.push({
+          kind: 'file-directory',
           ancestorRel: owner.rel,
           descendantRel: entry.rel,
           ancestorPage: owner.page,
@@ -1000,6 +1059,25 @@ function findOutputPathCollision(pages, asciiCaseAliases) {
     }
   }
 
+  if (asciiCaseAliases) {
+    for (const spellings of directoryRequirements.values()) {
+      if (spellings.size < 2) continue;
+      const ordered = [...spellings.values()].sort((a, b) => compareNames(a.rel, b.rel));
+      const ancestor = ordered[0];
+      const descendant = ordered[1];
+      collisions.push({
+        kind: 'directory-alias',
+        ancestorRel: ancestor.rel,
+        descendantRel: descendant.rel,
+        directoryRel: descendant.rel,
+        requiredBy: descendant.requiredBy,
+        ancestorPage: ancestor.page,
+        descendantPage: descendant.page,
+        exact: false,
+      });
+    }
+  }
+
   if (collisions.length === 0) return null;
   collisions.sort(compareCollision);
   return collisions[0];
@@ -1007,11 +1085,13 @@ function findOutputPathCollision(pages, asciiCaseAliases) {
 
 function outputPathCollisionFailure(out, collision) {
   const hostPath = path.join(out, ...collision.ancestorRel.split('/'));
-  const detail = collision.exact
-    ? `${collision.ancestorRel} is emitted more than once`
-    : collision.ancestorPage === null
-      ? `${collision.descendantRel} requires fixed host publication file ${collision.ancestorRel} to be a directory`
-      : `${collision.ancestorRel} cannot be both a file and a directory required by ${collision.descendantRel}`;
+  const detail = collision.kind === 'directory-alias'
+    ? `${collision.ancestorRel} and ${collision.directoryRel} are distinct output directory spellings that alias on this filesystem; ${collision.requiredBy} requires ${collision.directoryRel}`
+    : collision.exact
+      ? `${collision.ancestorRel} is emitted more than once`
+      : collision.ancestorPage === null
+        ? `${collision.descendantRel} requires fixed host publication file ${collision.ancestorRel} to be a directory`
+        : `${collision.ancestorRel} cannot be both a file and a directory required by ${collision.descendantRel}`;
   throw oneFailure(3, 'output-path-collision', {
     path: hostPath,
     page: collision.descendantPage,
@@ -1291,12 +1371,13 @@ async function bestEffortRemoveStage(stage) {
   }
 }
 
-async function publishOutput(containmentRoot, canonicalRoot, contentDir, out, pages) {
+async function publishOutput(containmentRoot, canonicalRoot, out, pages) {
   const lock = `${out}.pubend-lock`;
   const stage = `${out}.pubend-stage`;
   const backup = `${out}.pubend-previous`;
 
-  const asciiCaseAliases = await filesystemAsciiCaseAliases(contentDir);
+  const probeParent = await nearestExistingOutputDirectory(out);
+  const asciiCaseAliases = await filesystemAsciiCaseAliases(probeParent);
   assertNoOutputPathCollisions(out, pages, asciiCaseAliases);
   await prepareOutputParent(containmentRoot, canonicalRoot, out);
 
@@ -1344,7 +1425,7 @@ async function run(argv) {
   const compiled = invokeCompileReport(prepared.compileReport, scan.pages, prepared.artifact);
   if (!compiled.ok) throw new CliFailure(1, compiled.diagnostics);
 
-  await publishOutput(containmentRoot, site.realRoot, contentDir, out, compiled.pages);
+  await publishOutput(containmentRoot, site.realRoot, out, compiled.pages);
   return 0;
 }
 

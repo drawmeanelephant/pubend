@@ -241,9 +241,10 @@ def probe_case_alias_and_reserved(root: Path, wrapper: Path) -> dict[str, Any]:
         proc = run_pubend(wrapper, "build", site, "--out", spelling)
         require_diagnostic(proc, spelling, 2, "output-forbidden")
     require_tree_unchanged(content_before, site / "content", "case-alias content")
-    unexpected = set()
-    if case_alias_visible:
-        unexpected = {child.name for child in site.iterdir()} - {"content"}
+    allowed = {"content"}
+    if distinct_case_output_built:
+        allowed.add("CONTENT")
+    unexpected = {child.name for child in site.iterdir()} - allowed
     require(not unexpected, f"case-alias/reserved probe created publication paths: {sorted(unexpected)!r}")
     return {
         "case_alias_visible_on_filesystem": case_alias_visible,
@@ -497,6 +498,30 @@ def probe_backup_marker_case_alias(root: Path, wrapper: Path) -> dict[str, Any]:
     )
 
 
+def probe_fixed_directory_case_alias(root: Path, wrapper: Path) -> dict[str, Any]:
+    site = root / "sites" / "fixed-directory-case-alias"
+    page_dir = site / "content" / "_PUBEND"
+    page_dir.mkdir(parents=True)
+    (page_dir / "x.md").write_text("# X\n", encoding="utf-8")
+    case_alias = ascii_case_alias_visible(site / "content")
+    proc = run_pubend(wrapper, "build", site)
+    if case_alias:
+        require_diagnostic(proc, "fixed directory case alias", 3, "output-path-collision")
+        require(not os.path.lexists(site / "dist"), "directory case-alias collision created output")
+    else:
+        require_success(proc, "fixed directory case alias")
+        require((site / "dist" / "_PUBEND" / "x.html").is_file(),
+                "case-distinct _PUBEND output page is missing")
+        require((site / "dist" / "_pubend" / "manifest.json").is_file(),
+                "case-distinct lowercase manifest is missing")
+    require_publication_siblings_absent(site, "fixed directory case alias")
+    return {
+        "case_alias_visible_on_filesystem": case_alias,
+        "refused_as_collision": case_alias,
+        "distinct_case_output_built": not case_alias,
+    }
+
+
 def probe_marker_owned_stage_cleanup(root: Path, wrapper: Path) -> dict[str, Any]:
     site = make_site(root, "owned-stage")
     stage = site / "dist.pubend-stage"
@@ -548,6 +573,7 @@ PROBES: tuple[tuple[str, ProbeFunction], ...] = (
     ("fixed-manifest-case-alias", probe_manifest_case_alias),
     ("fixed-stage-marker-case-alias", probe_stage_marker_case_alias),
     ("fixed-backup-marker-case-alias", probe_backup_marker_case_alias),
+    ("fixed-directory-case-alias", probe_fixed_directory_case_alias),
     ("marker-owned-stage-cleanup", probe_marker_owned_stage_cleanup),
     ("content-symlink-alias-refused", probe_content_symlink_alias),
     ("symlinked-wrapper-structured-cli", probe_symlinked_wrapper_usage),
