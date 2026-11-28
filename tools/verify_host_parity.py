@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
 import concurrent.futures
 import hashlib
 import json
@@ -200,16 +201,62 @@ def compare_trees(native_tree: verify_cli_boundary.TreeSnapshot | None,
 def execute_direct_case(
     host: Host,
     source: Path,
+    case_root: Path,
     site: Path,
     out_name: str | None,
 ) -> tuple[Invocation, verify_cli_boundary.TreeSnapshot | None]:
+    if os.path.lexists(case_root):
+        shutil.rmtree(case_root)
+    case_root.mkdir(parents=True)
     reset_copy(source, site)
     argv = ["build", str(site)]
     if out_name is not None:
         argv.extend(["--out", out_name])
     invocation = run_direct(host, argv)
-    tree = verify_cli_boundary.snapshot_tree(site)
+    tree = verify_cli_boundary.snapshot_tree(case_root)
     return invocation, tree
+
+
+def diagnostic_class_counts(stderr: bytes) -> tuple[Counter[str] | None, list[str]]:
+    payload, payload_errors = verify_end_to_end.validate_error_payload(stderr)
+    if payload_errors:
+        return None, payload_errors
+    diagnostics = payload.get("diagnostics", []) if isinstance(payload, dict) else []
+    return Counter(
+        item.get("class")
+        for item in diagnostics
+        if isinstance(item, dict) and isinstance(item.get("class"), str)
+    ), []
+
+
+def compare_negative_diagnostic_truth(
+    host_name: str,
+    invocation: Invocation,
+    fixture: verify_end_to_end.NegativeFixture,
+    oracle_counts: Counter[str] | None,
+) -> list[str]:
+    errors: list[str] = []
+    actual_counts, payload_errors = diagnostic_class_counts(invocation.stderr)
+    errors.extend(f"{host_name} negative diagnostic payload: {error}" for error in payload_errors)
+    if actual_counts is None:
+        return errors
+
+    expected_classes = sorted(set(fixture.expected_classes))
+    actual_classes = sorted(actual_counts)
+    if actual_classes != expected_classes:
+        errors.append(
+            f"{host_name} diagnostic class set mismatch against fixture ground truth: "
+            f"expected {expected_classes!r}, actual {actual_classes!r}"
+        )
+
+    multiplicity_skip_reason = verify_end_to_end.ORACLE_EXACT_MULTIPLICITY_SKIP_REASONS.get(fixture.name)
+    if oracle_counts is not None and multiplicity_skip_reason is None and actual_counts != oracle_counts:
+        errors.append(
+            f"{host_name} diagnostic class multiset mismatch against independent corpus oracle: "
+            f"expected {verify_end_to_end.sorted_counter_object(oracle_counts)!r}, "
+            f"actual {verify_end_to_end.sorted_counter_object(actual_counts)!r}"
+        )
+    return errors
 
 
 def exception_row(row_type: str, label: str, error: Exception) -> dict[str, Any]:
@@ -228,14 +275,25 @@ def compare_direct_case(
     workspace: Path,
     out_name: str | None,
     expect_success: bool,
+    negative_fixture: verify_end_to_end.NegativeFixture | None = None,
 ) -> dict[str, Any]:
     native, oracle = hosts()
     safe_label = label.replace("/", "__")
-    site = workspace / "direct" / row_type / safe_label / "site"
+    case_root = workspace / "direct" / row_type / safe_label
+    site = case_root / "site"
     errors: list[str] = []
 
-    native_invocation, native_tree = execute_direct_case(native, source, site, out_name)
-    oracle_invocation, oracle_tree = execute_direct_case(oracle, source, site, out_name)
+    oracle_counts: Counter[str] | None = None
+    oracle_error: str | None = None
+    if not expect_success:
+        try:
+            oracle_counts = verify_end_to_end.oracle_diagnostic_class_counts(source)
+        except Exception as error:
+            oracle_error = f"could not derive independent oracle diagnostic counts: {error}"
+            errors.append(oracle_error)
+
+    native_invocation, native_tree = execute_direct_case(native, source, case_root, site, out_name)
+    oracle_invocation, oracle_tree = execute_direct_case(oracle, source, case_root, site, out_name)
 
     errors.extend(compare_invocations(native_invocation, oracle_invocation))
     errors.extend(compare_trees(native_tree, oracle_tree))
@@ -248,21 +306,34 @@ def compare_direct_case(
                     f"error={invocation.error!r}, stderr={compact_bytes(invocation.stderr)!r}"
                 )
     else:
+        if negative_fixture is None:
+            errors.append("negative parity case is missing its fixture ground truth")
         for host_name, invocation in (("native", native_invocation), ("oracle", oracle_invocation)):
             if invocation.error is not None or invocation.exit_code in (None, 0):
                 errors.append(
                     f"{host_name} negative case did not fail as a build failure: "
                     f"exit={invocation.exit_code!r}, error={invocation.error!r}"
                 )
+            if negative_fixture is not None:
+                errors.extend(compare_negative_diagnostic_truth(
+                    host_name, invocation, negative_fixture, oracle_counts
+                ))
 
     entry_count = len(native_tree or {})
     return {
         "type": row_type,
         "case": label,
         "ok": not errors,
-        "comparison": "same input path; reset fixture; exact exit/stdout/stderr bytes plus exact post-run tree",
+        "comparison": (
+            "same input path; reset full per-case workspace; exact exit/stdout/stderr bytes "
+            "plus exact post-run per-case tree"
+        ),
         "native": invocation_summary(native_invocation),
         "oracle": invocation_summary(oracle_invocation),
+        "expected_oracle_class_counts": (
+            verify_end_to_end.sorted_counter_object(oracle_counts) if oracle_counts is not None else None
+        ),
+        "oracle_error": oracle_error,
         "post_run_tree_entries": entry_count,
         "errors": errors,
     }
@@ -526,7 +597,7 @@ def positive_and_negative_rows(workspace: Path, jobs: int) -> list[dict[str, Any
         descriptions.append((
             label,
             lambda fixture=fixture: compare_direct_case(
-                "negative-parity", fixture.name, fixture.source, workspace, None, False
+                "negative-parity", fixture.name, fixture.source, workspace, None, False, fixture
             ),
         ))
 

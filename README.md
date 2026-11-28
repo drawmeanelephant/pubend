@@ -47,6 +47,8 @@ Not yet implemented or not claimed:
   probed, while platform-dependent IO error text remains outside the byte-level contract;
 - immunity to adversarial concurrent mutation of input/output trees; the host requires stable trees and uses
   post-stage validation only as a mitigation;
+- wrapper symlink chains whose link target paths contain U+000A; ordinary relative/absolute symlinked wrapper
+  resolution is probed, but newline-bearing symlink target paths are outside the shell resolver contract;
 - an alternate output mapping for physically colliding page output paths such as `a` plus `a.html/x`.
 
 Read [docs/v0-spec.md](docs/v0-spec.md) before treating any of those gaps as complete. The specification is the
@@ -71,12 +73,22 @@ sh tools/verify_ci.sh all
 `./pubend` is a portable `sh` launcher for the native host, not a JavaScript shim. It resolves wrapper symlinks,
 requires the pinned Bend 2.0.40 toolchain, and content-addresses the host binary in the gitignored
 `.pubend-cache/` directory. The cache key covers the cache format, operating system, architecture, Bend version,
-`host/*.bend`, `host/host_eff.c`, `host/host_eff.js`, `src/*.bend`, and every `.bend` file under `engine/src` —
-a deliberately conservative superset of the host's transitive pure-compile inputs. If the needed binary is
-absent, one builder acquires a `mkdir` lock, compiles `host/hostmain.bend` to a temporary file, and atomically
-moves it into place; concurrent invocations wait for that binary instead of transparently rebuilding every time.
+`host/*.bend`, `host/host_eff.c`, `host/host_eff.js`, `src/*.bend`, every `.bend` file under `engine/src`, the
+toolchain's `bend2/base.bend`, and every `.c`/`.js` effect implementation under `bend2/effs` — a deliberately
+conservative superset of the host's transitive compile inputs. Input enumeration uses a locale-stable `LC_ALL=C`
+sort order, and missing or unreadable hash inputs are bootstrap failures rather than skippable data.
+
+If the needed binary is absent, one builder acquires a `mkdir` lock and records its wrapper owner pid. A child
+shell `exec`s Bend in that same process, and the wrapper records that child pid as the lock's compiler pid, so
+`pid` names the real compiler rather than a short-lived wrapper. Bend compiles `host/hostmain.bend` to a temporary file,
+the builder checks that it is executable and has the host platform's Mach-O or ELF magic, and the binary is
+atomically moved into place. Concurrent invocations wait behind a live compiler even when its wrapper was
+killed; once the compiler and owner are both gone, stale lock and `.building` artifacts are removed and one
+waiter rebuilds. A live non-builder pid in the compiler slot is treated as malformed after a short grace period.
 Old content-addressed binaries may remain in the cache and can be removed with the whole `.pubend-cache/`
-directory. Source changes change the hash and therefore select a fresh binary.
+directory. Source or Bend-library changes change the hash and therefore select a fresh binary. The lock is a
+crash-serialization mechanism for a cooperating local cache directory, not a security boundary against an
+adversary who can write that directory.
 
 After the cache check, the launcher `exec`s the cached native binary. The product path does not invoke Node.js,
 Bun, or any other JavaScript runtime. Missing or wrong-version Bend toolchains, missing SHA-256 utilities,
@@ -118,13 +130,15 @@ boundary controls are reported by the lane but are not negative evidence.
 
 The host-parity lane is the migration harness for issue #2. It copies or constructs inputs under `/tmp`, runs
 each positive corpus site and physical negative fixture through the native product host and the JavaScript
-reference oracle at the same path with a reset between runs, and requires exact equality of exit codes, stdout
-bytes, stderr bytes, and post-run trees. It also reruns every CLI boundary probe through both hosts under the
-same reset-at-the-same-path discipline and compares the ordered raw invocation bytes. The oracle,
-`tools/pubend.mjs`, is retained only for this migration/evidence role and for the older compiler-comparison
-harness; it is not the product host. The parity lane uses `node` on `PATH` for the oracle by default;
-`PUBEND_ORACLE_NODE` may point at a specific JavaScript runtime executable when the oracle itself is being
-debugged.
+reference oracle at the same path with a full reset of the per-case workspace between runs, and requires exact
+equality of exit codes, stdout bytes, stderr bytes, and post-run per-case trees. Negative direct cases are also
+checked against their `EXPECTED` diagnostic class sets and the independent corpus-oracle class multisets, with
+the same documented `malformed-frontmatter` exact-multiplicity skip as the end-to-end lane. It also reruns
+every CLI boundary probe through both hosts under the same reset-at-the-same-path discipline and compares the
+ordered raw invocation bytes. The oracle, `tools/pubend.mjs`, is retained only for this migration/evidence role
+and for the older compiler-comparison harness; it is not the product host. The parity lane uses `node` on
+`PATH` for the oracle by default; `PUBEND_ORACLE_NODE` may point at a specific JavaScript runtime executable
+when the oracle itself is being debugged.
 
 `LAWS.bend` intentionally reports open law declarations when checked standalone; those obligations are
 discharged in `PROOF.bend`.
